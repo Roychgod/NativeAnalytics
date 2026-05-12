@@ -122,3 +122,7 @@ This release is renamed to **NativeAnalytics** and is intended as a fresh instal
 - Fixed the real reason side-by-side panels looked vertically offset in 1.0.13–1.0.18. The `.pwna-panel + .pwna-panel { margin-top: 16px }` rule introduced in 1.0.13 (for the Compare tab) leaked into grid layouts too: every second panel inside `pwna-grid-2` / `pwna-grid-3` was getting an extra 16px top margin inside the stretched grid cell, pushing its content down so the headers no longer lined up.
 - The sibling-margin rule is now scoped: it applies only to panels that are *not* direct children of `pwna-grid-2` / `pwna-grid-3`. Inside grids, the grid `gap` already provides horizontal spacing, so no extra vertical margin is needed.
 
+
+- Improved the compact page-level analytics box shown inside ProcessPageEdit.
+- The page edit analytics summary now uses a small responsive card grid instead of plain stacked text.
+- The admin CSS is explicitly loaded for the page edit analytics box, so the mini summary is styled correctly outside the main analytics dashboard.

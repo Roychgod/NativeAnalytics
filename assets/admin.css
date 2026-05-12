@@ -286,11 +286,72 @@
   fill: #607384;
   font-family: inherit;
 }
-.pwna-mini { padding: 6px 0; }
+.pwna-mini {
+  padding: 2px 0 0;
+  max-width: 920px;
+}
 .pwna-mini-grid {
   display: grid;
-  gap: 12px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  grid-template-columns: repeat(4, minmax(120px, 1fr));
+}
+.pwna-mini-card {
+  box-sizing: border-box;
+  padding: 9px 11px;
+  border: 1px solid #d9e1ea;
+  border-radius: 0;
+  background: #fff;
+  min-width: 0;
+}
+.pwna-mini-label {
+  margin-bottom: 4px;
+  color: #607384;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.035em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+.pwna-mini-number {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  color: #2f424f;
+  line-height: 1.15;
+}
+.pwna-mini-number strong {
+  font-size: 22px;
+  font-weight: 700;
+}
+.pwna-mini-number span {
+  font-size: 12px;
+}
+.pwna-mini-meta {
+  margin-top: 3px;
+  color: #6b7d8f;
+  font-size: 12px;
+  line-height: 1.25;
+}
+.pwna-mini-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  margin-top: 9px;
+}
+.pwna-mini-button {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 10px !important;
+  line-height: 1.3;
+}
+.pwna-mini-button i {
+  margin-right: 5px;
+}
+@media (max-width: 1000px) {
+  .pwna-mini-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 520px) {
+  .pwna-mini-grid { grid-template-columns: 1fr; }
 }
 .pwna-badge {
   display: inline-block;

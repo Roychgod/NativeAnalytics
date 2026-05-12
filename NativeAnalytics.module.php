@@ -1892,6 +1892,8 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $summary30 = $this->getPageSummary($editedPage->id, 30);
         $current = $this->getCurrentVisitorsSummary((int) $this->realtimeWindowMinutes, ['page_id' => (int) $editedPage->id]);
 
+        $this->wire('config')->styles->add($this->getAssetUrl('assets/admin.css') . '?v=' . rawurlencode(self::VERSION));
+
         $field = $this->wire('modules')->get('InputfieldMarkup');
         $field->label = 'Analytics';
         $field->icon = 'line-chart';
@@ -1902,14 +1904,28 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
 
     public function renderMiniStatsBox(array $summary7, array $summary30, array $current, Page $page) {
         $url = $this->wire('config')->urls->admin . 'native-analytics/?range=30d&page_id=' . (int) $page->id;
+        $url = $this->wire('sanitizer')->entities($url);
         $minutes = max(1, (int) $this->realtimeWindowMinutes);
-        $html = '<div class="pwna-mini"><div class="pwna-mini-grid">';
-        $html .= '<div><strong>Last 7 days</strong><div>' . (int) $summary7['views'] . ' views</div><div>' . (int) $summary7['uniques'] . ' uniques</div></div>';
-        $html .= '<div><strong>Last 30 days</strong><div>' . (int) $summary30['views'] . ' views</div><div>' . (int) $summary30['uniques'] . ' uniques</div></div>';
-        $html .= '<div><strong>Current visitors</strong><div>' . (int) ($current['current_visitors'] ?? 0) . ' active</div><div>window: ' . $minutes . ' min</div></div>';
-        $html .= '<div><strong>Sessions</strong><div>' . (int) $summary30['sessions'] . ' in 30 days</div><div>page ID ' . (int) $page->id . '</div></div>';
-        $html .= '</div><p style="margin-top:10px;"><a class="ui-button" href="' . $this->wire('sanitizer')->entities($url) . '">Open full analytics</a></p></div>';
+        $currentVisitors = (int) ($current['current_visitors'] ?? 0);
+
+        $html = '<div class="pwna-mini">';
+        $html .= '<div class="pwna-mini-grid">';
+        $html .= $this->renderMiniStatCard('Last 7 days', (int) $summary7['views'], 'views', (int) $summary7['uniques'] . ' uniques');
+        $html .= $this->renderMiniStatCard('Last 30 days', (int) $summary30['views'], 'views', (int) $summary30['uniques'] . ' uniques');
+        $html .= $this->renderMiniStatCard('Current visitors', $currentVisitors, 'active', 'window: ' . $minutes . ' min');
+        $html .= $this->renderMiniStatCard('Sessions', (int) $summary30['sessions'], 'in 30 days', 'page ID ' . (int) $page->id);
+        $html .= '</div>';
+        $html .= '<div class="pwna-mini-footer"><a class="ui-button ui-priority-secondary pwna-mini-button" href="' . $url . '"><i class="fa fa-line-chart"></i> Open full analytics</a></div>';
+        $html .= '</div>';
         return $html;
+    }
+
+    protected function renderMiniStatCard($label, $value, $suffix, $meta) {
+        return '<div class="pwna-mini-card">'
+            . '<div class="pwna-mini-label">' . $this->wire('sanitizer')->entities((string) $label) . '</div>'
+            . '<div class="pwna-mini-number"><strong>' . (int) $value . '</strong><span>' . $this->wire('sanitizer')->entities((string) $suffix) . '</span></div>'
+            . '<div class="pwna-mini-meta">' . $this->wire('sanitizer')->entities((string) $meta) . '</div>'
+            . '</div>';
     }
 
     public function renderComparisonChart(array $primarySeries, array $comparisonSeries, $metric = 'views', $chartLabel = 'Comparison chart', $primaryLabel = 'Selected period', $secondaryLabel = 'Comparison period') {

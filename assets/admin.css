@@ -286,7 +286,17 @@
   fill: #607384;
   font-family: inherit;
 }
+
+/* Page Edit mini analytics panel spacing */
+#wrap_Inputfield_nativeAnalyticsPageSummary,
+#Inputfield_nativeAnalyticsPageSummary,
+.Inputfield.pwna-page-edit-analytics-field,
+.pwna-page-edit-analytics-field {
+  margin-top: 24px !important;
+}
+
 .pwna-mini {
+  margin-top: 18px;
   padding: 2px 0 0;
   max-width: 920px;
 }
@@ -338,11 +348,14 @@
   justify-content: flex-start;
   margin-top: 9px;
 }
-.pwna-mini-button {
-  display: inline-flex;
-  align-items: center;
+.pwna-mini-button,
+.pwna-mini-button:hover,
+.pwna-mini-button.ui-state-hover {
+  display: inline-block;
   padding: 5px 10px !important;
-  line-height: 1.3;
+  line-height: 1.3 !important;
+  transform: none !important;
+  min-height: 0;
 }
 .pwna-mini-button i {
   margin-right: 5px;

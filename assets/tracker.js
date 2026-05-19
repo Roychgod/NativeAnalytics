@@ -84,19 +84,22 @@
   window.PWNA.visitorId = '';
   window.PWNA.sessionId = '';
 
-  function sendPayload(payload) {
+  function sendPayload(payload, preferBeacon) {
     if (!payload || !canTrack()) return;
     var ids = getIds();
     payload.visitorId = ids.visitorId;
     payload.sessionId = ids.sessionId;
     var body = JSON.stringify(payload);
-    try {
-      if (navigator.sendBeacon) {
-        var blob = new Blob([body], { type: 'application/json' });
-        navigator.sendBeacon(cfg.trackEndpoint, blob);
-        return;
-      }
-    } catch (e) {}
+
+    if (preferBeacon !== false) {
+      try {
+        if (navigator.sendBeacon) {
+          var blob = new Blob([body], { type: 'application/json' });
+          if (navigator.sendBeacon(cfg.trackEndpoint, blob)) return;
+        }
+      } catch (e) {}
+    }
+
     if (!window.fetch) return;
     fetch(cfg.trackEndpoint, {
       method: 'POST',
@@ -140,8 +143,9 @@
     if (hasConsent()) window.PWNA.trackPageview();
   };
 
-  window.PWNA.trackEvent = function (name, extra) {
+  window.PWNA.trackEvent = function (name, extra, options) {
     if (!cfg.trackEndpoint || !cfg.eventTracking || !name) return;
+    options = options || {};
     sendPayload({
       type: 'event',
       name: String(name),
@@ -152,7 +156,7 @@
       url: window.location.href,
       referrer: document.referrer || '',
       extra: extra || {}
-    });
+    }, options.preferBeacon !== false);
   };
 
   function privacyWireAllowsAnalytics() {
@@ -188,8 +192,40 @@
   };
 
   if (cfg.eventTracking) {
+    function findFormFromSubmitControl(el) {
+      if (!el) return null;
+      if (el.form) return el.form;
+      return el.closest ? el.closest('form') : null;
+    }
+
+    function formEventPayload(form, submitter) {
+      var label = '';
+      if (form) {
+        label = form.getAttribute('data-pwna-label') || form.getAttribute('aria-label') || form.getAttribute('name') || form.getAttribute('id') || '';
+      }
+      if (!label && submitter) label = submitter.getAttribute('data-pwna-label') || submitter.getAttribute('name') || textOf(submitter) || '';
+      if (!label && form) label = form.getAttribute('action') || '';
+      return {
+        group: 'form',
+        label: label || 'form submit',
+        target: (form && form.getAttribute('action')) || window.location.pathname,
+        method: (form && form.getAttribute('method')) || '',
+        submitter: submitter ? (submitter.getAttribute('name') || textOf(submitter) || '') : ''
+      };
+    }
+
+    function markFormTracked(form) {
+      if (!form) return;
+      try { form.__pwnaLastSubmitTrack = Date.now(); } catch (e) {}
+    }
+
+    function wasFormTrackedRecently(form) {
+      if (!form) return false;
+      try { return !!form.__pwnaLastSubmitTrack && (Date.now() - form.__pwnaLastSubmitTrack) < 1500; } catch (e) { return false; }
+    }
+
     document.addEventListener('click', function (e) {
-      var el = e.target && e.target.closest ? e.target.closest('[data-pwna-event], a[href], button[data-pwna-event], input[type=submit][data-pwna-event]') : null;
+      var el = e.target && e.target.closest ? e.target.closest('[data-pwna-event], a[href], button, input[type=button], input[type=submit]') : null;
       if (!el) return;
 
       if (el.hasAttribute('data-pwna-event')) {
@@ -201,7 +237,19 @@
         return;
       }
 
-      if (el.tagName !== 'A') return;
+      var tag = (el.tagName || '').toUpperCase();
+      var type = String(el.getAttribute('type') || '').toLowerCase();
+      var isSubmitControl = (tag === 'BUTTON' && (!type || type === 'submit')) || (tag === 'INPUT' && type === 'submit');
+      if (isSubmitControl) {
+        var form = findFormFromSubmitControl(el);
+        if (form && !wasFormTrackedRecently(form)) {
+          markFormTracked(form);
+          window.PWNA.trackEvent('form_submit', formEventPayload(form, el), { preferBeacon: true });
+        }
+        return;
+      }
+
+      if (tag !== 'A') return;
       var href = el.getAttribute('href') || '';
       if (!href || href.charAt(0) === '#') return;
 
@@ -226,8 +274,9 @@
     document.addEventListener('submit', function (e) {
       var form = e.target;
       if (!form || !form.tagName || form.tagName.toLowerCase() !== 'form') return;
-      var label = form.getAttribute('data-pwna-label') || form.getAttribute('name') || form.getAttribute('id') || form.getAttribute('action') || 'form submit';
-      window.PWNA.trackEvent('form_submit', { group: 'form', label: label, target: form.getAttribute('action') || window.location.pathname });
+      if (wasFormTrackedRecently(form)) return;
+      markFormTracked(form);
+      window.PWNA.trackEvent('form_submit', formEventPayload(form, e.submitter || null), { preferBeacon: true });
     }, true);
   }
 

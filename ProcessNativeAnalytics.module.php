@@ -6,7 +6,7 @@ class ProcessNativeAnalytics extends Process {
         return [
             'title' => 'NativeAnalytics Dashboard',
             'summary' => 'Dashboard for the NativeAnalytics module.',
-            'version' => '1.0.19',
+            'version' => 1020,
             'author' => 'Pyxios - Roych (www.pyxios.com)',
             'permission' => 'nativeanalytics-view',
             'icon' => 'area-chart',
@@ -185,7 +185,7 @@ public function ___execute() {
     $topContacts = $analytics->getTopEvents($rangeSpec, 10, $filters, 'contact');
     $topEventTargets = $analytics->getTopEventTargets($rangeSpec, 12, $filters);
 
-    $this->config->styles->add($analytics->getAssetUrl('assets/admin.css') . '?v=' . rawurlencode(NativeAnalytics::VERSION));
+    $this->config->styles->add($analytics->getAssetUrl('assets/admin.css') . '?v=' . rawurlencode($analytics->getAssetVersion('assets/admin.css')));
     $wireTabs = null;
     try {
         $wireTabs = $this->modules->get('JqueryWireTabs');
@@ -869,7 +869,8 @@ protected function renderWireTabsScript($activeTab, $engagementView) {
         'storageKey' => 'pwna:main-tab',
         'labels' => $labels,
     ];
-    $json = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    $json = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
+    if($json === false) $json = '{}';
     $script = <<<'HTML'
 <script>
 (function($){
@@ -1307,7 +1308,8 @@ protected function renderChartTooltipScript() {
             'pageId' => (int) $pageId,
             'template' => (string) $template,
         ];
-        $json = json_encode($payload);
+        $json = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
+        if($json === false) $json = '{}';
         return <<<HTML
 <script>
 (function(){

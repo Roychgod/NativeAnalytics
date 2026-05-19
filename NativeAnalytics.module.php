@@ -2,7 +2,7 @@
 
 class NativeAnalytics extends WireData implements Module, ConfigurableModule {
 
-    const VERSION = '1.0.19';
+    const VERSION = '1.0.20';
     const HITS_TABLE = 'pwna_hits';
     const DAILY_TABLE = 'pwna_daily';
     const SESSIONS_TABLE = 'pwna_sessions';
@@ -20,6 +20,8 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         'excludePaths' => "/processwire/\n/admin/\n/404/",
         'searchQueryVars' => 'q,s,search',
         'dashboardDefaultRange' => '30d',
+        'displayDateFormat' => 'site_default',
+        'showPageEditAnalytics' => 1,
         'hashSalt' => '',
         'eventTrackingEnabled' => 1,
         'trackingStorageMode' => 'cookie',
@@ -27,14 +29,25 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         'privacyWireStorageKey' => 'privacywire',
         'privacyWireGroups' => 'statistics,marketing',
         'privacyWireConsentCookieMaxAge' => 31536000,
+        'monthlyReportsEnabled' => 0,
+        'monthlyReportRecipients' => '',
+        'monthlyReportSendDay' => 1,
+        'monthlyReportFromEmail' => '',
+        'monthlyReportAttachPdf' => 1,
+        'monthlyReportIncludeTopPages' => 1,
+        'monthlyReportIncludeReferrers' => 1,
+        'monthlyReportIncludeEvents' => 1,
+        'monthlyReportLastSentPeriod' => '',
     ];
 
     public static function getModuleInfo() {
         return [
             'title' => 'NativeAnalytics',
             'summary' => 'Native first-party analytics dashboard for ProcessWire with traffic, compare, exports and event tracking.',
-            'version' => self::VERSION,
+            'version' => 1020,
             'author' => 'Pyxios - Roych (www.pyxios.com)',
+            'href' => 'https://processwire.com/talk/topic/31808-native-analytics-%E2%80%94-a-native-analytics-module-for-processwire/',
+            'repo' => 'https://github.com/Roychgod/NativeAnalytics',
             'icon' => 'line-chart',
             'autoload' => true,
             'singular' => true,
@@ -55,10 +68,16 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
     public function ready() {
         $this->applyDefaults();
 
+        if($this->wire('config')->admin) {
+            $this->maybeHandleMonthlyReportToolRequest();
+        }
+
         if(!$this->trackingEnabled) return;
 
         if($this->wire('config')->admin) {
-            $this->addHookAfter('ProcessPageEdit::buildForm', $this, 'addPageAnalyticsBox');
+            if(!empty($this->showPageEditAnalytics)) {
+                $this->addHookAfter('ProcessPageEdit::buildForm', $this, 'addPageAnalyticsBox');
+            }
             return;
         }
 
@@ -87,6 +106,16 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
 
     public function getAssetUrl($relativePath) {
         return $this->wire('config')->urls->siteModules . $this->getModuleDirName() . '/' . ltrim($relativePath, '/');
+    }
+
+    public function getAssetVersion($relativePath = '') {
+        $version = self::VERSION;
+        $relativePath = ltrim((string) $relativePath, '/');
+        if($relativePath !== '') {
+            $file = __DIR__ . '/' . $relativePath;
+            if(is_file($file)) $version .= '-' . filemtime($file);
+        }
+        return $version;
     }
 
     public function getTrackEndpointUrl() {
@@ -386,6 +415,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             'excludePaths' => "/processwire/\n/admin/\n/404/",
             'searchQueryVars' => 'q,s,search',
             'dashboardDefaultRange' => '30d',
+            'showPageEditAnalytics' => 1,
             'hashSalt' => '',
             'eventTrackingEnabled' => 1,
             'trackingStorageMode' => 'cookie',
@@ -394,6 +424,15 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             'privacyWireGroups' => 'statistics,marketing',
             'privacyWireConsentCookieMaxAge' => 31536000,
             'displayDateFormat' => 'site_default',
+            'monthlyReportsEnabled' => 0,
+            'monthlyReportRecipients' => '',
+            'monthlyReportSendDay' => 1,
+            'monthlyReportFromEmail' => '',
+            'monthlyReportAttachPdf' => 1,
+            'monthlyReportIncludeTopPages' => 1,
+            'monthlyReportIncludeReferrers' => 1,
+            'monthlyReportIncludeEvents' => 1,
+            'monthlyReportLastSentPeriod' => '',
         ];
         $data = array_replace($defaults, $data);
         $wrapper = new InputfieldWrapper();
@@ -546,6 +585,112 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $f->description = 'Default date range shown when opening the analytics dashboard.';
         $wrapper->add($f);
 
+        $f = $wire->modules->get('InputfieldCheckbox');
+        $f->name = 'showPageEditAnalytics';
+        $f->showIf = 'trackingEnabled=1';
+        $f->label = 'Show page analytics summary in Page Edit';
+        $f->checked = !empty($data['showPageEditAnalytics']);
+        $f->description = 'Show a compact NativeAnalytics summary at the bottom of each page edit screen. Disable this if you prefer a cleaner Page Edit form.';
+        $wrapper->add($f);
+
+
+        $f = $wire->modules->get('InputfieldCheckbox');
+        $f->name = 'monthlyReportsEnabled';
+        $f->showIf = 'trackingEnabled=1';
+        $f->label = 'Enable monthly email reports';
+        $f->checked = !empty($data['monthlyReportsEnabled']);
+        $f->description = 'Send a short NativeAnalytics summary by email once per month. The report covers the previous calendar month.';
+        $wrapper->add($f);
+
+        $f = $wire->modules->get('InputfieldTextarea');
+        $f->name = 'monthlyReportRecipients';
+        $f->showIf = 'trackingEnabled=1, monthlyReportsEnabled=1';
+        $f->label = 'Monthly report recipients';
+        $f->rows = 3;
+        $f->value = $data['monthlyReportRecipients'] ?? '';
+        $f->description = 'One or more email addresses, separated by commas or new lines.';
+        $wrapper->add($f);
+
+        $f = $wire->modules->get('InputfieldInteger');
+        $f->name = 'monthlyReportSendDay';
+        $f->showIf = 'trackingEnabled=1, monthlyReportsEnabled=1';
+        $f->label = 'Send report on day of month';
+        $f->value = max(1, min(28, (int) ($data['monthlyReportSendDay'] ?? 1)));
+        $f->min = 1;
+        $f->max = 28;
+        $f->description = 'Recommended: 1. The report is sent once per month for the previous calendar month. Values are limited to 1–28 so the setting works in every month.';
+        $wrapper->add($f);
+
+        $f = $wire->modules->get('InputfieldText');
+        $f->name = 'monthlyReportFromEmail';
+        $f->showIf = 'trackingEnabled=1, monthlyReportsEnabled=1';
+        $f->label = 'Report sender email (optional)';
+        $f->value = $data['monthlyReportFromEmail'] ?? '';
+        $f->description = 'Leave empty to use the site/default WireMail sender. Some SMTP providers require a verified sender address.';
+        $wrapper->add($f);
+
+        $f = $wire->modules->get('InputfieldCheckbox');
+        $f->name = 'monthlyReportAttachPdf';
+        $f->showIf = 'trackingEnabled=1, monthlyReportsEnabled=1';
+        $f->label = 'Attach PDF report to monthly email';
+        $f->checked = !empty($data['monthlyReportAttachPdf']);
+        $f->description = 'Adds a clean PDF version of the same report as an email attachment. Enabled by default.';
+        $wrapper->add($f);
+
+        $f = $wire->modules->get('InputfieldCheckbox');
+        $f->name = 'monthlyReportIncludeTopPages';
+        $f->showIf = 'trackingEnabled=1, monthlyReportsEnabled=1';
+        $f->label = 'Include top pages in monthly report';
+        $f->checked = !empty($data['monthlyReportIncludeTopPages']);
+        $wrapper->add($f);
+
+        $f = $wire->modules->get('InputfieldCheckbox');
+        $f->name = 'monthlyReportIncludeReferrers';
+        $f->showIf = 'trackingEnabled=1, monthlyReportsEnabled=1';
+        $f->label = 'Include top referrers in monthly report';
+        $f->checked = !empty($data['monthlyReportIncludeReferrers']);
+        $wrapper->add($f);
+
+        $f = $wire->modules->get('InputfieldCheckbox');
+        $f->name = 'monthlyReportIncludeEvents';
+        $f->showIf = 'trackingEnabled=1, monthlyReportsEnabled=1';
+        $f->label = 'Include engagement events in monthly report';
+        $f->checked = !empty($data['monthlyReportIncludeEvents']);
+        $f->description = 'Includes total engagement events and the top tracked events for the month.';
+        $wrapper->add($f);
+
+        $tokenName = $wire->session->CSRF->getTokenName();
+        $tokenValue = $wire->session->CSRF->getTokenValue();
+        $baseConfigUrl = $wire->config->urls->admin . 'module/edit?name=NativeAnalytics';
+        $testUrl = $baseConfigUrl . '&pwna_monthly_report_action=send_test&' . rawurlencode($tokenName) . '=' . rawurlencode($tokenValue);
+        $previewUrl = $baseConfigUrl . '&pwna_monthly_report_preview=1';
+        $f = $wire->modules->get('InputfieldMarkup');
+        $f->name = 'monthlyReportTestTool';
+        $f->showIf = 'trackingEnabled=1, monthlyReportsEnabled=1';
+        $f->label = 'Monthly report tools';
+        $f->value = '<p class="pwna-report-tool-buttons">'
+            . '<a class="ui-button ui-priority-secondary" href="' . $wire->sanitizer->entities($previewUrl) . '"><i class="fa fa-eye"></i> Report preview</a> '
+            . '<a class="ui-button ui-priority-secondary" href="' . $wire->sanitizer->entities($testUrl) . '"><i class="fa fa-envelope-o"></i> Send test report now</a>'
+            . '</p>'
+            . '<p class="description">Preview the monthly report in the admin or send it immediately to the configured recipients. The scheduled report uses the previous calendar month; test/preview automatically falls back to current month-to-date when the previous month has no data yet. Save settings first if you changed recipients or report options. Test sends do not update the last sent month marker.</p>';
+        $wrapper->add($f);
+
+        if((int) $wire->input->get('pwna_monthly_report_preview') === 1) {
+            $f = $wire->modules->get('InputfieldMarkup');
+            $f->name = 'monthlyReportPreview';
+            $f->showIf = 'trackingEnabled=1, monthlyReportsEnabled=1';
+            $f->label = 'Monthly report preview';
+            $module = $wire->modules->get('NativeAnalytics');
+            $previewHtml = ($module instanceof self) ? $module->renderMonthlyReportAdminPreview(false) : '<p class="description">Preview is not available until the module is loaded.</p>';
+            $f->value = '<p class="description">Preview only. No email is sent from this view.</p>' . $previewHtml;
+            $wrapper->add($f);
+        }
+
+        $f = $wire->modules->get('InputfieldHidden');
+        $f->name = 'monthlyReportLastSentPeriod';
+        $f->value = $data['monthlyReportLastSentPeriod'] ?? '';
+        $wrapper->add($f);
+
         $f = $wire->modules->get('InputfieldSelect');
         $f->name = 'displayDateFormat';
         $f->showIf = 'trackingEnabled=1';
@@ -679,7 +824,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         if(!$page instanceof Page || !$page->id) return;
 
         $payload = [
-            'trackEndpoint' => $this->getCurrentPageEventEndpointUrl(),
+            'trackEndpoint' => $this->getTrackEndpointUrl(),
             'path' => $this->getRequestPathForStorage(),
             'pageId' => (int) $page->id,
             'pageTitle' => (string) $page->get('title'),
@@ -698,8 +843,11 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             'consentCookieMaxAge' => max(3600, (int) $this->privacyWireConsentCookieMaxAge),
         ];
 
-        $scriptUrl = $this->getAssetUrl('assets/tracker.js') . '?v=' . rawurlencode(self::VERSION);
-        $injected = "\n<script>window.PWNA_CONFIG = " . json_encode($payload) . ";</script>\n";
+        $scriptUrl = $this->getAssetUrl('assets/tracker.js') . '?v=' . rawurlencode($this->getAssetVersion('assets/tracker.js'));
+        $jsonFlags = JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
+        $configJson = json_encode($payload, $jsonFlags);
+        if($configJson === false) return;
+        $injected = "\n<script>window.PWNA_CONFIG = " . $configJson . ";</script>\n";
         $injected .= '<script src="' . $this->wire('sanitizer')->entities($scriptUrl) . '" data-pwna-tracker="1" defer></script>' . "\n";
 
         if(stripos($html, '</body>') !== false) {
@@ -1209,6 +1357,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
     public function handleDailyCron() {
         $this->rebuildDailyAggregate(date('Y-m-d', strtotime('-1 day')));
         $this->purgeOldHits();
+        $this->maybeSendMonthlyReport();
     }
 
     public function handleHourlyCron() {
@@ -1840,7 +1989,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $db = $this->wire('database');
         $snapshot = [
             'module_dir' => $this->getModuleDirName(),
-            'admin_css_url' => $this->getAssetUrl('assets/admin.css') . '?v=' . rawurlencode(self::VERSION),
+            'admin_css_url' => $this->getAssetUrl('assets/admin.css') . '?v=' . rawurlencode($this->getAssetVersion('assets/admin.css')),
             'tracker_js_url' => $this->getAssetUrl('assets/tracker.js') . '?v=' . rawurlencode(self::VERSION),
             'track_endpoint_url' => $this->getTrackEndpointUrl(),
             'realtime_endpoint_url' => $this->getRealtimeEndpointUrl(),
@@ -1885,18 +2034,25 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
     public function addPageAnalyticsBox(HookEvent $event) {
         if(!$this->wire('user')->hasPermission('nativeanalytics-view')) return;
         $form = $event->return;
-        $editedPage = $event->process->getPage();
+        if(!is_object($form) || !method_exists($form, 'add')) return;
+        try {
+            $editedPage = $event->process->getPage();
+        } catch(\Throwable $e) {
+            return;
+        }
         if(!$editedPage || !$editedPage->id || ($editedPage->template && $editedPage->template->name === 'admin')) return;
 
         $summary7 = $this->getPageSummary($editedPage->id, 7);
         $summary30 = $this->getPageSummary($editedPage->id, 30);
         $current = $this->getCurrentVisitorsSummary((int) $this->realtimeWindowMinutes, ['page_id' => (int) $editedPage->id]);
 
-        $this->wire('config')->styles->add($this->getAssetUrl('assets/admin.css') . '?v=' . rawurlencode(self::VERSION));
+        $this->wire('config')->styles->add($this->getAssetUrl('assets/admin.css') . '?v=' . rawurlencode($this->getAssetVersion('assets/admin.css')));
 
         $field = $this->wire('modules')->get('InputfieldMarkup');
+        $field->name = 'nativeAnalyticsPageSummary';
         $field->label = 'Analytics';
         $field->icon = 'line-chart';
+        $field->wrapClass = trim((string) $field->wrapClass . ' pwna-page-edit-analytics-field');
         $field->collapsed = Inputfield::collapsedNo;
         $field->value = $this->renderMiniStatsBox($summary7, $summary30, $current, $editedPage);
         $form->add($field);
@@ -2053,6 +2209,831 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $html .= '<div class="pwna-chart-tooltip" hidden><div class="pwna-chart-tooltip-day"></div><div class="pwna-chart-tooltip-time" hidden></div><div class="pwna-chart-tooltip-grid"><span>Views</span><strong data-pwna-tip="views">0</strong><span>Uniques</span><strong data-pwna-tip="uniques">0</strong><span>Sessions</span><strong data-pwna-tip="sessions">0</strong></div><div class="pwna-chart-tooltip-compare" hidden><div class="pwna-chart-tooltip-day" data-pwna-tip="compare-day"></div><div class="pwna-chart-tooltip-grid"><span>Views</span><strong data-pwna-tip="compare-views">0</strong><span>Uniques</span><strong data-pwna-tip="compare-uniques">0</strong><span>Sessions</span><strong data-pwna-tip="compare-sessions">0</strong></div></div></div>';
         $html .= '</div>';
         return $html;
+    }
+
+
+
+    protected function maybeHandleMonthlyReportToolRequest() {
+        if(!$this->wire('config')->admin) return;
+
+        $input = $this->wire('input');
+        $action = (string) $input->get('pwna_monthly_report_action');
+        if($action !== 'send_test') return;
+
+        $session = $this->wire('session');
+        $user = $this->wire('user');
+        $redirectUrl = $this->getModuleConfigUrl();
+
+        if(!$user->isSuperuser() && !$user->hasPermission('nativeanalytics-manage')) {
+            $session->error('NativeAnalytics: You do not have permission to send test reports.');
+            $session->redirect($redirectUrl);
+        }
+
+        $tokenName = $session->CSRF->getTokenName();
+        $expectedTokenValue = (string) $session->CSRF->getTokenValue();
+        $requestTokenValue = (string) $input->get($tokenName);
+        if($requestTokenValue === '' || !hash_equals($expectedTokenValue, $requestTokenValue)) {
+            $session->error('NativeAnalytics: Security token expired. Please try again.');
+            $session->redirect($redirectUrl);
+        }
+
+        $result = $this->sendMonthlyReportTest();
+        if(!empty($result['success'])) {
+            $session->message($result['message']);
+        } else {
+            $session->error($result['message']);
+        }
+        $session->redirect($redirectUrl);
+    }
+
+    protected function getModuleConfigUrl() {
+        return $this->wire('config')->urls->admin . 'module/edit?name=NativeAnalytics';
+    }
+
+    public function sendMonthlyReportTest() {
+        $recipients = $this->getMonthlyReportRecipients();
+        if(!$recipients) {
+            return [
+                'success' => false,
+                'message' => 'NativeAnalytics: Test report was not sent because no valid monthly report recipient email address is configured.',
+            ];
+        }
+
+        $range = $this->getMonthlyReportPreviewRange();
+        try {
+            $sent = $this->sendMonthlyReportEmail($range, $recipients, true);
+            if($sent) {
+                $this->wire('log')->save('native-analytics', 'Monthly test report sent to ' . implode(', ', $recipients) . '.');
+                return [
+                    'success' => true,
+                    'message' => 'NativeAnalytics: Test monthly report sent to ' . implode(', ', $recipients) . '.',
+                ];
+            }
+            $this->wire('log')->save('native-analytics', 'Monthly test report could not be sent.');
+            return [
+                'success' => false,
+                'message' => 'NativeAnalytics: Test report could not be sent. Please check your WireMail/SMTP configuration.',
+            ];
+        } catch(\Throwable $e) {
+            return [
+                'success' => false,
+                'message' => 'NativeAnalytics: Test report failed: ' . $e->getMessage(),
+            ];
+        }
+    }
+
+    public function maybeSendMonthlyReport($force = false) {
+        if(!$force && empty($this->monthlyReportsEnabled)) return false;
+
+        $recipients = $this->getMonthlyReportRecipients();
+        if(!$recipients) {
+            if(!empty($this->monthlyReportsEnabled)) {
+                $this->wire('log')->save('native-analytics', 'Monthly report skipped: no valid recipient email address configured.');
+            }
+            return false;
+        }
+
+        $sendDay = max(1, min(28, (int) ($this->monthlyReportSendDay ?: 1)));
+        if(!$force && (int) date('j') < $sendDay) return false;
+
+        $range = $this->getPreviousMonthReportRange();
+        $period = (string) $range['period'];
+        if(!$force && (string) $this->monthlyReportLastSentPeriod === $period) return false;
+
+        try {
+            $sent = $this->sendMonthlyReportEmail($range, $recipients);
+            if($sent) {
+                $this->saveMonthlyReportLastSentPeriod($period);
+                $this->wire('log')->save('native-analytics', 'Monthly report sent for ' . $period . ' to ' . implode(', ', $recipients) . '.');
+                return true;
+            }
+            $this->wire('log')->save('native-analytics', 'Monthly report could not be sent for ' . $period . '.');
+        } catch(\Throwable $e) {
+            $this->wire('log')->save('native-analytics', 'Monthly report failed: ' . $e->getMessage());
+        }
+
+        return false;
+    }
+
+    protected function getMonthlyReportRecipients() {
+        $recipients = [];
+        $raw = (string) ($this->monthlyReportRecipients ?? '');
+        foreach(preg_split('/[\s,;]+/', $raw) as $email) {
+            $email = trim((string) $email);
+            if($email === '') continue;
+            $email = $this->wire('sanitizer')->email($email);
+            if($email !== '') $recipients[$email] = $email;
+        }
+        return array_values($recipients);
+    }
+
+    protected function getPreviousMonthReportRange($timestamp = null) {
+        $timestamp = $timestamp ?: time();
+        $thisMonthStart = strtotime(date('Y-m-01 00:00:00', $timestamp));
+        $previousMonthStart = strtotime('-1 month', $thisMonthStart);
+        $startDate = date('Y-m-01', $previousMonthStart);
+        $endDate = date('Y-m-t', $previousMonthStart);
+        return [
+            'period' => date('Y-m', $previousMonthStart),
+            'title' => date('F Y', $previousMonthStart),
+            'start' => $startDate . ' 00:00:00',
+            'end' => $endDate . ' 23:59:59',
+            'start_date' => $startDate,
+            'end_date' => $endDate,
+        ];
+    }
+
+    protected function getCurrentMonthReportRange($timestamp = null) {
+        $timestamp = $timestamp ?: time();
+        $startDate = date('Y-m-01', $timestamp);
+        $endDate = date('Y-m-d', $timestamp);
+        return [
+            'period' => date('Y-m', $timestamp),
+            'title' => date('F Y', $timestamp) . ' to date',
+            'start' => $startDate . ' 00:00:00',
+            'end' => $endDate . ' 23:59:59',
+            'start_date' => $startDate,
+            'end_date' => $endDate,
+        ];
+    }
+
+    protected function getLast30DaysReportRange($timestamp = null) {
+        $timestamp = $timestamp ?: time();
+        $startDate = date('Y-m-d', strtotime('-29 days', $timestamp));
+        $endDate = date('Y-m-d', $timestamp);
+        return [
+            'period' => 'last-30-days',
+            'title' => 'Last 30 days',
+            'start' => $startDate . ' 00:00:00',
+            'end' => $endDate . ' 23:59:59',
+            'start_date' => $startDate,
+            'end_date' => $endDate,
+        ];
+    }
+
+    protected function getMonthlyReportPreviewRange() {
+        $previousMonth = $this->getPreviousMonthReportRange();
+        if($this->monthlyReportRangeHasData($previousMonth)) return $previousMonth;
+
+        $currentMonth = $this->getCurrentMonthReportRange();
+        if($this->monthlyReportRangeHasData($currentMonth)) {
+            $currentMonth['report_note'] = 'The previous calendar month has no recorded data yet, so this test/preview uses the current month to date.';
+            return $currentMonth;
+        }
+
+        $last30Days = $this->getLast30DaysReportRange();
+        if($this->monthlyReportRangeHasData($last30Days)) {
+            $last30Days['report_note'] = 'The previous calendar month has no recorded data yet, so this test/preview uses the last 30 days.';
+            return $last30Days;
+        }
+
+        $previousMonth['report_note'] = 'No analytics data was found for the previous calendar month, current month, or last 30 days yet.';
+        return $previousMonth;
+    }
+
+    protected function monthlyReportRangeHasData(array $range) {
+        try {
+            $summary = $this->getSummary($range, []);
+            $summary404 = $this->get404Summary($range);
+            $eventSummary = $this->getEventSummary($range, []);
+            return ((int) ($summary['views'] ?? 0) + (int) ($summary404['views'] ?? 0) + (int) ($eventSummary['events'] ?? 0)) > 0;
+        } catch(\Throwable $e) {
+            return false;
+        }
+    }
+
+    protected function sendMonthlyReportEmail(array $range, array $recipients, $isTest = false) {
+        $summary = $this->getSummary($range, []);
+        $quality = $this->getSessionQuality($range, []);
+        $summary404 = $this->get404Summary($range);
+        $topPages = !empty($this->monthlyReportIncludeTopPages) ? $this->getTopPages($range, 10, []) : [];
+        $referrers = !empty($this->monthlyReportIncludeReferrers) ? $this->getTopReferrers($range, 10, []) : [];
+        $eventSummary = !empty($this->monthlyReportIncludeEvents) ? $this->getEventSummary($range, []) : ['events' => 0, 'uniques' => 0, 'sessions' => 0];
+        $topEvents = !empty($this->monthlyReportIncludeEvents) ? $this->getTopEvents($range, 10, []) : [];
+
+        $siteName = $this->getReportSiteName();
+        $subject = ($isTest ? '[TEST] ' : '') . 'NativeAnalytics monthly report - ' . $siteName . ' - ' . (string) $range['title'];
+        $html = $this->renderMonthlyReportHtml($range, $summary, $quality, $summary404, $topPages, $referrers, $eventSummary, $topEvents, $isTest);
+        $text = $this->renderMonthlyReportText($range, $summary, $quality, $summary404, $topPages, $referrers, $eventSummary, $topEvents, $isTest);
+
+        $mail = wireMail();
+        foreach($recipients as $recipient) {
+            $mail->to($recipient);
+        }
+        $from = $this->wire('sanitizer')->email((string) ($this->monthlyReportFromEmail ?? ''));
+        if($from === '' && !empty($this->wire('config')->adminEmail)) {
+            $from = $this->wire('sanitizer')->email((string) $this->wire('config')->adminEmail);
+        }
+        if($from !== '') $mail->from($from);
+        $mail->subject($subject);
+        $mail->body($text);
+        if(method_exists($mail, 'bodyHTML')) $mail->bodyHTML($html);
+
+        $pdfPath = '';
+        if(!empty($this->monthlyReportAttachPdf) && method_exists($mail, 'attachment')) {
+            try {
+                $pdf = $this->createMonthlyReportPdfAttachment($range, $summary, $quality, $summary404, $topPages, $referrers, $eventSummary, $topEvents, $isTest);
+                $pdfPath = (string) ($pdf['path'] ?? '');
+                if($pdfPath !== '' && is_file($pdfPath)) {
+                    try {
+                        $mail->attachment($pdfPath, (string) ($pdf['name'] ?? basename($pdfPath)));
+                    } catch(\Throwable $e) {
+                        // Older/custom WireMail adapters may only accept the file path.
+                        $mail->attachment($pdfPath);
+                    }
+                }
+            } catch(\Throwable $e) {
+                $this->wire('log')->save('native-analytics', 'Monthly report PDF attachment could not be created: ' . $e->getMessage());
+            }
+        }
+
+        try {
+            return ((int) $mail->send()) > 0;
+        } finally {
+            if($pdfPath !== '' && is_file($pdfPath)) @unlink($pdfPath);
+        }
+    }
+
+    protected function getReportSiteName() {
+        $config = $this->wire('config');
+        if(!empty($config->siteName)) return (string) $config->siteName;
+        if(!empty($config->httpHost)) return (string) $config->httpHost;
+        if(!empty($_SERVER['HTTP_HOST'])) return (string) $_SERVER['HTTP_HOST'];
+        return 'ProcessWire site';
+    }
+
+    protected function getAnalyticsDashboardUrl() {
+        try {
+            $page = $this->wire('pages')->get('template=admin, name=native-analytics, include=all');
+            if($page && $page->id) return $page->httpUrl;
+        } catch(\Throwable $e) {
+        }
+        return $this->wire('config')->urls->admin . 'native-analytics/';
+    }
+
+    protected function formatMonthlyReportDisplayValue($value) {
+        $value = trim((string) $value);
+        if($value === '') return '';
+
+        if(preg_match('#^https?://#i', $value)) {
+            $host = parse_url($value, PHP_URL_HOST);
+            $host = $host ? preg_replace('/^www\./i', '', (string) $host) : '';
+            if($host !== '') return 'External URL (' . str_replace('.', ' ', $host) . ')';
+            return 'External URL';
+        }
+
+        return $value;
+    }
+
+    protected function formatMonthlyReportEventMeta(array $row) {
+        $label = $this->formatMonthlyReportDisplayValue($row['event_label'] ?? '');
+        $target = $this->formatMonthlyReportDisplayValue($row['event_target'] ?? '');
+        return trim($label . ($label !== '' && $target !== '' ? ' · ' : '') . $target);
+    }
+
+    protected function createMonthlyReportPdfAttachment(array $range, array $summary, array $quality, array $summary404, array $topPages, array $referrers, array $eventSummary, array $topEvents, $isTest = false) {
+        $siteName = $this->getReportSiteName();
+        $safeSite = strtolower(preg_replace('/[^a-z0-9]+/i', '-', $siteName));
+        $safeSite = trim($safeSite, '-');
+        if($safeSite === '') $safeSite = 'site';
+        $safePeriod = strtolower(preg_replace('/[^a-z0-9]+/i', '-', (string) ($range['period'] ?? date('Y-m'))));
+        $safePeriod = trim($safePeriod, '-');
+        if($safePeriod === '') $safePeriod = date('Y-m');
+        $filename = 'nativeanalytics-report-' . $safeSite . '-' . $safePeriod . ($isTest ? '-test' : '') . '.pdf';
+
+        $cacheDir = $this->wire('config')->paths->cache . 'NativeAnalytics/';
+        if(!is_dir($cacheDir)) @mkdir($cacheDir, 0775, true);
+        if(!is_dir($cacheDir) || !is_writable($cacheDir)) {
+            throw new \RuntimeException('Cache directory is not writable: ' . $cacheDir);
+        }
+
+        $path = $cacheDir . uniqid('monthly-report-', true) . '.pdf';
+        $pdf = $this->renderMonthlyReportPdf($range, $summary, $quality, $summary404, $topPages, $referrers, $eventSummary, $topEvents, $isTest);
+        if(file_put_contents($path, $pdf) === false) {
+            throw new \RuntimeException('Could not write PDF report file.');
+        }
+
+        return ['path' => $path, 'name' => $filename];
+    }
+
+    protected function renderMonthlyReportPdf(array $range, array $summary, array $quality, array $summary404, array $topPages, array $referrers, array $eventSummary, array $topEvents, $isTest = false) {
+        $metrics = [
+            ['Page views', (string) (int) ($summary['views'] ?? 0)],
+            ['Unique visitors', (string) (int) ($summary['uniques'] ?? 0)],
+            ['Sessions', (string) (int) ($summary['sessions'] ?? 0)],
+            ['Events', (string) (int) ($eventSummary['events'] ?? 0)],
+            ['404 hits', (string) (int) ($summary404['views'] ?? 0)],
+            ['Avg. pages/session', number_format((float) ($quality['avg_pages_per_session'] ?? 0), 2)],
+        ];
+
+        $elements = [];
+        $elements[] = [
+            'type' => 'header',
+            'title' => ($isTest ? '[TEST] ' : '') . 'NativeAnalytics monthly report',
+            'site' => $this->getReportSiteName(),
+            'period' => (string) ($range['title'] ?? '') . ' · ' . $this->formatDisplayRange($range),
+        ];
+        if($isTest) {
+            $elements[] = ['type' => 'note', 'text' => 'This is a manually sent test report. The normal monthly send marker was not updated.'];
+        }
+        if(!empty($range['report_note'])) {
+            $elements[] = ['type' => 'note', 'text' => (string) $range['report_note']];
+        }
+        $elements[] = ['type' => 'metrics', 'items' => $metrics];
+
+        if(!empty($this->monthlyReportIncludeTopPages)) {
+            $rows = [];
+            foreach($topPages as $row) {
+                $label = ($row['page_title'] ?? '') !== '' ? (string) $row['page_title'] : (string) ($row['path'] ?? '');
+                $path = (string) ($row['path'] ?? '');
+                if($path !== '' && $path !== $label) $label .= ' (' . $path . ')';
+                $rows[] = [
+                    $label,
+                    (string) (int) ($row['views'] ?? 0),
+                    (string) (int) ($row['uniques'] ?? 0),
+                    (string) (int) ($row['sessions'] ?? 0),
+                ];
+            }
+            $elements[] = ['type' => 'section', 'title' => 'Top pages'];
+            $elements[] = ['type' => 'table', 'headers' => ['Page', 'Views', 'Uniques', 'Sessions'], 'widths' => [0.58, 0.14, 0.14, 0.14], 'rows' => $rows, 'empty' => 'No page data for this period.'];
+        }
+
+        if(!empty($this->monthlyReportIncludeReferrers)) {
+            $rows = [];
+            foreach($referrers as $row) {
+                $rows[] = [
+                    (string) ($row['referrer_host'] ?? ''),
+                    (string) (int) ($row['views'] ?? 0),
+                ];
+            }
+            $elements[] = ['type' => 'section', 'title' => 'Top referrers'];
+            $elements[] = ['type' => 'table', 'headers' => ['Referrer', 'Views'], 'widths' => [0.78, 0.22], 'rows' => $rows, 'empty' => 'No referrer data for this period.'];
+        }
+
+        if(!empty($this->monthlyReportIncludeEvents)) {
+            $rows = [];
+            foreach($topEvents as $row) {
+                $meta = $this->formatMonthlyReportEventMeta($row);
+                $event = trim((string) ($row['event_group'] ?? '') . ' / ' . (string) ($row['event_name'] ?? ''), ' /');
+                if($meta !== '') $event .= ' · ' . $meta;
+                $rows[] = [
+                    $event,
+                    (string) (int) ($row['events'] ?? 0),
+                ];
+            }
+            $elements[] = ['type' => 'section', 'title' => 'Top engagement events'];
+            $elements[] = ['type' => 'table', 'headers' => ['Event', 'Count'], 'widths' => [0.78, 0.22], 'rows' => $rows, 'empty' => 'No event data for this period.'];
+        }
+
+        $elements[] = ['type' => 'footer', 'text' => 'Dashboard: ' . $this->getAnalyticsDashboardUrl()];
+        return $this->buildStyledMonthlyReportPdf($elements);
+    }
+
+    protected function buildStyledMonthlyReportPdf(array $elements) {
+        $pageWidth = 595;
+        $pageHeight = 842;
+        $marginLeft = 42;
+        $marginRight = 42;
+        $marginTop = 42;
+        $marginBottom = 44;
+        $contentWidth = $pageWidth - $marginLeft - $marginRight;
+        $pages = [];
+        $stream = '';
+        $y = $pageHeight - $marginTop;
+
+        $rgb = function($r, $g, $b) {
+            return sprintf('%.3F %.3F %.3F', $r / 255, $g / 255, $b / 255);
+        };
+        $setFill = function($r, $g, $b) use ($rgb) {
+            return $rgb($r, $g, $b) . " rg\n";
+        };
+        $setStroke = function($r, $g, $b) use ($rgb) {
+            return $rgb($r, $g, $b) . " RG\n";
+        };
+        $rect = function($x, $bottom, $w, $h, $fill = null, $stroke = null) use (&$stream, $setFill, $setStroke) {
+            if(is_array($fill)) $stream .= $setFill($fill[0], $fill[1], $fill[2]);
+            if(is_array($stroke)) $stream .= $setStroke($stroke[0], $stroke[1], $stroke[2]);
+            $stream .= sprintf('%.2F %.2F %.2F %.2F re ', $x, $bottom, $w, $h);
+            if(is_array($fill) && is_array($stroke)) {
+                $stream .= "B\n";
+            } elseif(is_array($fill)) {
+                $stream .= "f\n";
+            } elseif(is_array($stroke)) {
+                $stream .= "S\n";
+            }
+        };
+        $line = function($x1, $y1, $x2, $y2, $color = [217, 225, 234]) use (&$stream, $setStroke) {
+            $stream .= $setStroke($color[0], $color[1], $color[2]);
+            $stream .= sprintf('%.2F %.2F m %.2F %.2F l S' . "\n", $x1, $y1, $x2, $y2);
+        };
+        $text = function($x, $baseline, $value, $size = 10, $bold = false, $color = [47, 66, 79]) use (&$stream, $setFill) {
+            $font = $bold ? 'F2' : 'F1';
+            $stream .= $setFill($color[0], $color[1], $color[2]);
+            $stream .= 'BT /' . $font . ' ' . (int) $size . ' Tf ' . sprintf('%.2F %.2F', $x, $baseline) . ' Td (' . $this->pdfEscapeText((string) $value) . ") Tj ET\n";
+        };
+        $estimateTextWidth = function($value, $size = 10) {
+            return strlen((string) $value) * ((int) $size * 0.52);
+        };
+        $wrappedLines = function($value, $width, $size = 10) {
+            $maxChars = max(8, (int) floor($width / max(4, ((int) $size * 0.52))));
+            return $this->wrapPdfText($value, $maxChars);
+        };
+        $finishPage = function() use (&$pages, &$stream) {
+            $pages[] = $stream;
+            $stream = '';
+        };
+        $ensureSpace = function($height) use (&$y, $pageHeight, $marginTop, $marginBottom, &$finishPage) {
+            if($y - $height < $marginBottom) {
+                $finishPage();
+                $y = $pageHeight - $marginTop;
+            }
+        };
+
+        foreach($elements as $element) {
+            $type = (string) ($element['type'] ?? '');
+
+            if($type === 'header') {
+                $height = 92;
+                $ensureSpace($height);
+                $top = $y;
+                $bottom = $top - $height;
+                $rect($marginLeft, $bottom, $contentWidth, $height, [246, 248, 250], [217, 225, 234]);
+                $rect($marginLeft, $bottom, 5, $height, [47, 111, 159], null);
+                $text($marginLeft + 18, $top - 28, (string) ($element['title'] ?? 'NativeAnalytics monthly report'), 19, true, [47, 66, 79]);
+                $text($marginLeft + 18, $top - 51, (string) ($element['site'] ?? ''), 11, true, [96, 115, 132]);
+                $text($marginLeft + 18, $top - 70, (string) ($element['period'] ?? ''), 10, false, [96, 115, 132]);
+                $y = $bottom - 18;
+                continue;
+            }
+
+            if($type === 'note') {
+                $lines = $wrappedLines((string) ($element['text'] ?? ''), $contentWidth - 22, 9);
+                $height = 20 + (count($lines) * 12);
+                $ensureSpace($height + 8);
+                $top = $y;
+                $bottom = $top - $height;
+                $rect($marginLeft, $bottom, $contentWidth, $height, [255, 252, 238], [232, 212, 138]);
+                $ty = $top - 17;
+                foreach($lines as $part) {
+                    $text($marginLeft + 11, $ty, $part, 9, false, [95, 74, 0]);
+                    $ty -= 12;
+                }
+                $y = $bottom - 14;
+                continue;
+            }
+
+            if($type === 'metrics') {
+                $items = $element['items'] ?? [];
+                if(!is_array($items)) $items = [];
+                $cols = 3;
+                $gap = 10;
+                $cardW = ($contentWidth - (($cols - 1) * $gap)) / $cols;
+                $cardH = 55;
+                $rows = max(1, (int) ceil(count($items) / $cols));
+                $height = ($rows * $cardH) + (($rows - 1) * $gap) + 8;
+                $ensureSpace($height + 4);
+                foreach($items as $i => $item) {
+                    $col = $i % $cols;
+                    $row = (int) floor($i / $cols);
+                    $x = $marginLeft + ($col * ($cardW + $gap));
+                    $top = $y - ($row * ($cardH + $gap));
+                    $bottom = $top - $cardH;
+                    $rect($x, $bottom, $cardW, $cardH, [255, 255, 255], [217, 225, 234]);
+                    $text($x + 10, $top - 17, (string) ($item[0] ?? ''), 8, true, [96, 115, 132]);
+                    $text($x + 10, $top - 38, (string) ($item[1] ?? '0'), 18, true, [47, 66, 79]);
+                }
+                $y -= $height + 10;
+                continue;
+            }
+
+            if($type === 'section') {
+                $ensureSpace(34);
+                $text($marginLeft, $y - 2, (string) ($element['title'] ?? ''), 13, true, [47, 66, 79]);
+                $line($marginLeft, $y - 13, $marginLeft + $contentWidth, $y - 13, [217, 225, 234]);
+                $y -= 28;
+                continue;
+            }
+
+            if($type === 'table') {
+                $headers = $element['headers'] ?? [];
+                $widths = $element['widths'] ?? [];
+                $rows = $element['rows'] ?? [];
+                if(!is_array($headers)) $headers = [];
+                if(!is_array($widths)) $widths = [];
+                if(!is_array($rows)) $rows = [];
+                $colCount = count($headers);
+                if($colCount < 1) continue;
+                $sum = array_sum($widths) ?: $colCount;
+                $colWidths = [];
+                for($i = 0; $i < $colCount; $i++) {
+                    $colWidths[$i] = $contentWidth * (((float) ($widths[$i] ?? (1 / $colCount))) / $sum);
+                }
+
+                $headerH = 24;
+                $ensureSpace($headerH + 30);
+                $rect($marginLeft, $y - $headerH, $contentWidth, $headerH, [239, 244, 248], [217, 225, 234]);
+                $x = $marginLeft;
+                foreach($headers as $i => $h) {
+                    $text($x + 7, $y - 16, (string) $h, 8, true, [96, 115, 132]);
+                    $x += $colWidths[$i];
+                }
+                $y -= $headerH;
+
+                if(!$rows) {
+                    $rowH = 28;
+                    $ensureSpace($rowH + 6);
+                    $rect($marginLeft, $y - $rowH, $contentWidth, $rowH, [255, 255, 255], [217, 225, 234]);
+                    $text($marginLeft + 7, $y - 18, (string) ($element['empty'] ?? 'No data for this period.'), 9, false, [96, 115, 132]);
+                    $y -= $rowH + 14;
+                    continue;
+                }
+
+                foreach($rows as $rowIndex => $row) {
+                    if(!is_array($row)) $row = [];
+                    $cellLines = [];
+                    $rowLineCount = 1;
+                    for($i = 0; $i < $colCount; $i++) {
+                        $lines = $wrappedLines((string) ($row[$i] ?? ''), $colWidths[$i] - 14, 8);
+                        $cellLines[$i] = $lines;
+                        $rowLineCount = max($rowLineCount, count($lines));
+                    }
+                    $rowH = max(24, 13 + ($rowLineCount * 11));
+                    $ensureSpace($rowH + 6);
+                    $fill = ($rowIndex % 2 === 0) ? [255, 255, 255] : [250, 252, 253];
+                    $rect($marginLeft, $y - $rowH, $contentWidth, $rowH, $fill, [217, 225, 234]);
+                    $x = $marginLeft;
+                    for($i = 0; $i < $colCount; $i++) {
+                        $ty = $y - 15;
+                        foreach($cellLines[$i] as $part) {
+                            $color = $i === 0 ? [47, 66, 79] : [96, 115, 132];
+                            $text($x + 7, $ty, $part, 8, false, $color);
+                            $ty -= 11;
+                        }
+                        $x += $colWidths[$i];
+                    }
+                    $y -= $rowH;
+                }
+                $y -= 16;
+                continue;
+            }
+
+            if($type === 'footer') {
+                $ensureSpace(28);
+                $line($marginLeft, $y, $marginLeft + $contentWidth, $y, [217, 225, 234]);
+                $text($marginLeft, $y - 16, (string) ($element['text'] ?? ''), 8, false, [96, 115, 132]);
+                $y -= 28;
+            }
+        }
+
+        if($stream !== '') $finishPage();
+        if(!$pages) $pages[] = '';
+
+        $objects = [];
+        $objects[] = '<< /Type /Catalog /Pages 2 0 R >>';
+        $objects[] = ''; // Filled after page objects are known.
+        $objects[] = '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>';
+        $objects[] = '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>';
+        $pageRefs = [];
+        $pageCount = count($pages);
+        foreach($pages as $i => $pageStream) {
+            $footer = '';
+            $footer .= $setFill(132, 146, 160);
+            $footer .= 'BT /F1 8 Tf ' . sprintf('%.2F %.2F', $marginLeft, 24) . ' Td (' . $this->pdfEscapeText('NativeAnalytics') . ") Tj ET\n";
+            $pageLabel = 'Page ' . ($i + 1) . ' of ' . $pageCount;
+            $footerX = $pageWidth - $marginRight - max(40, $estimateTextWidth($pageLabel, 8));
+            $footer .= 'BT /F1 8 Tf ' . sprintf('%.2F %.2F', $footerX, 24) . ' Td (' . $this->pdfEscapeText($pageLabel) . ") Tj ET\n";
+            $pageStream .= $footer;
+            $contentId = count($objects) + 1;
+            $objects[] = '<< /Length ' . strlen($pageStream) . " >>\nstream\n" . $pageStream . 'endstream';
+            $pageId = count($objects) + 1;
+            $objects[] = '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ' . $pageWidth . ' ' . $pageHeight . '] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents ' . $contentId . ' 0 R >>';
+            $pageRefs[] = $pageId . ' 0 R';
+        }
+
+        $objects[1] = '<< /Type /Pages /Kids [' . implode(' ', $pageRefs) . '] /Count ' . count($pageRefs) . ' >>';
+        $pdf = "%PDF-1.4\n%\xE2\xE3\xCF\xD3\n";
+        $offsets = [0];
+        foreach($objects as $i => $object) {
+            $offsets[$i + 1] = strlen($pdf);
+            $pdf .= ($i + 1) . " 0 obj\n" . $object . "\nendobj\n";
+        }
+        $xref = strlen($pdf);
+        $pdf .= "xref\n0 " . (count($objects) + 1) . "\n";
+        $pdf .= "0000000000 65535 f \n";
+        for($i = 1; $i <= count($objects); $i++) {
+            $pdf .= sprintf("%010d 00000 n \n", $offsets[$i]);
+        }
+        $pdf .= "trailer\n<< /Size " . (count($objects) + 1) . " /Root 1 0 R >>\nstartxref\n" . $xref . "\n%%EOF";
+        return $pdf;
+    }
+
+    protected function wrapPdfText($text, $maxChars = 96) {
+        $text = trim(preg_replace('/\s+/', ' ', strip_tags((string) $text)));
+        if($text === '') return [''];
+        $words = preg_split('/\s+/', $text);
+        $lines = [];
+        $line = '';
+        foreach($words as $word) {
+            if($line === '') {
+                $line = $word;
+                continue;
+            }
+            if(strlen($line . ' ' . $word) > $maxChars) {
+                $lines[] = $line;
+                $line = $word;
+            } else {
+                $line .= ' ' . $word;
+            }
+        }
+        if($line !== '') $lines[] = $line;
+        return $lines ?: [''];
+    }
+
+    protected function pdfEscapeText($text) {
+        $text = html_entity_decode(strip_tags((string) $text), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $text = strtr($text, [
+            '→' => '->', '←' => '<-', '–' => '-', '—' => '-', '·' => '-', '…' => '...',
+            '“' => '"', '”' => '"', '„' => '"', '‘' => "'", '’' => "'",
+            "\xc2\xa0" => ' ',
+        ]);
+        if(function_exists('iconv')) {
+            $converted = @iconv('UTF-8', 'Windows-1252//TRANSLIT//IGNORE', $text);
+            if($converted !== false) $text = $converted;
+        } else {
+            $text = strtr($text, [
+                'Č' => 'C', 'Š' => 'S', 'Ž' => 'Z', 'Ć' => 'C', 'Đ' => 'D',
+                'č' => 'c', 'š' => 's', 'ž' => 'z', 'ć' => 'c', 'đ' => 'd',
+            ]);
+        }
+        $text = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', '', $text);
+        return str_replace(['\\', '(', ')'], ['\\\\', '\\(', '\\)'], $text);
+    }
+
+    protected function renderMonthlyReportHtml(array $range, array $summary, array $quality, array $summary404, array $topPages, array $referrers, array $eventSummary, array $topEvents, $isTest = false) {
+        $s = $this->wire('sanitizer');
+        $dashboardUrl = $this->getAnalyticsDashboardUrl();
+        $html = '<!doctype html><html><body style="font-family:Arial,sans-serif;color:#222;line-height:1.45;">';
+        $html .= '<h1 style="font-size:22px;margin:0 0 6px;">' . ($isTest ? '[TEST] ' : '') . 'NativeAnalytics monthly report</h1>';
+        if($isTest) $html .= '<p style="margin:0 0 12px;padding:8px 10px;background:#fff8e1;border:1px solid #e6d48a;color:#5f4a00;">This is a manually sent test report. The normal monthly send marker was not updated.</p>';
+        if(!empty($range['report_note'])) $html .= '<p style="margin:0 0 12px;padding:8px 10px;background:#eef6fb;border:1px solid #c7dbe8;color:#2b5368;">' . $s->entities((string) $range['report_note']) . '</p>';
+        $html .= '<p style="margin:0 0 18px;color:#666;">' . $s->entities($this->getReportSiteName()) . ' · ' . $s->entities((string) $range['title']) . ' · ' . $s->entities($this->formatDisplayRange($range)) . '</p>';
+        $html .= '<table width="100%" cellpadding="8" cellspacing="0" style="border-collapse:collapse;margin:0 0 18px;">';
+        $html .= '<tr>';
+        $html .= $this->renderMonthlyReportMetricCell('Page views', (int) ($summary['views'] ?? 0));
+        $html .= $this->renderMonthlyReportMetricCell('Unique visitors', (int) ($summary['uniques'] ?? 0));
+        $html .= $this->renderMonthlyReportMetricCell('Sessions', (int) ($summary['sessions'] ?? 0));
+        $html .= $this->renderMonthlyReportMetricCell('Current 404 hits', (int) ($summary404['views'] ?? 0));
+        $html .= '</tr>';
+        $html .= '<tr>';
+        $html .= $this->renderMonthlyReportMetricCell('Events', (int) ($eventSummary['events'] ?? 0));
+        $html .= $this->renderMonthlyReportMetricCell('Avg. pages/session', number_format((float) ($quality['avg_pages_per_session'] ?? 0), 2));
+        $html .= $this->renderMonthlyReportMetricCell('Single-page sessions', (string) ($quality['single_page_rate'] ?? 0) . '%');
+        $html .= $this->renderMonthlyReportMetricCell('Event sessions', (int) ($eventSummary['sessions'] ?? 0));
+        $html .= '</tr>';
+        $html .= '</table>';
+
+        if(!empty($this->monthlyReportIncludeTopPages)) {
+            $html .= $this->renderMonthlyReportTable('Top pages', ['Page', 'Views', 'Uniques', 'Sessions'], $topPages, function($row) {
+                return [
+                    $row['page_title'] !== '' ? $row['page_title'] . ' (' . $row['path'] . ')' : $row['path'],
+                    (int) ($row['views'] ?? 0),
+                    (int) ($row['uniques'] ?? 0),
+                    (int) ($row['sessions'] ?? 0),
+                ];
+            });
+        }
+
+        if(!empty($this->monthlyReportIncludeReferrers)) {
+            $html .= $this->renderMonthlyReportTable('Top referrers', ['Referrer', 'Views'], $referrers, function($row) {
+                return [
+                    $row['referrer_host'] ?? '',
+                    (int) ($row['views'] ?? 0),
+                ];
+            });
+        }
+
+        if(!empty($this->monthlyReportIncludeEvents)) {
+            $html .= $this->renderMonthlyReportTable('Top engagement events', ['Group', 'Event', 'Label / target', 'Events'], $topEvents, function($row) {
+                return [
+                    $row['event_group'] ?? '',
+                    $row['event_name'] ?? '',
+                    $this->formatMonthlyReportEventMeta($row),
+                    (int) ($row['events'] ?? 0),
+                ];
+            });
+        }
+
+        $html .= '<p style="margin:20px 0 0;"><a href="' . $s->entities($dashboardUrl) . '" style="display:inline-block;padding:9px 14px;border:1px solid #2f6f9f;text-decoration:none;color:#2f6f9f;">Open full analytics dashboard</a></p>';
+        $html .= '</body></html>';
+        return $html;
+    }
+
+    protected function renderMonthlyReportMetricCell($label, $value) {
+        $s = $this->wire('sanitizer');
+        return '<td style="border:1px solid #ddd;background:#f7f7f7;"><div style="font-size:12px;color:#666;">' . $s->entities((string) $label) . '</div><strong style="font-size:20px;">' . $s->entities((string) $value) . '</strong></td>';
+    }
+
+    protected function renderMonthlyReportTable($title, array $headers, array $rows, callable $mapRow) {
+        $s = $this->wire('sanitizer');
+        $html = '<h2 style="font-size:17px;margin:22px 0 8px;">' . $s->entities((string) $title) . '</h2>';
+        if(!$rows) return $html . '<p style="color:#777;margin:0 0 12px;">No data for this period.</p>';
+        $html .= '<table width="100%" cellpadding="6" cellspacing="0" style="border-collapse:collapse;margin:0 0 14px;">';
+        $html .= '<tr>';
+        foreach($headers as $header) {
+            $html .= '<th align="left" style="border-bottom:1px solid #ddd;background:#f3f3f3;">' . $s->entities((string) $header) . '</th>';
+        }
+        $html .= '</tr>';
+        foreach($rows as $row) {
+            $html .= '<tr>';
+            foreach($mapRow($row) as $cell) {
+                $html .= '<td style="border-bottom:1px solid #eee;vertical-align:top;">' . $s->entities((string) $cell) . '</td>';
+            }
+            $html .= '</tr>';
+        }
+        $html .= '</table>';
+        return $html;
+    }
+
+    protected function renderMonthlyReportText(array $range, array $summary, array $quality, array $summary404, array $topPages, array $referrers, array $eventSummary, array $topEvents, $isTest = false) {
+        $lines = [];
+        $lines[] = ($isTest ? '[TEST] ' : '') . 'NativeAnalytics monthly report';
+        if($isTest) $lines[] = 'This is a manually sent test report. The normal monthly send marker was not updated.';
+        if(!empty($range['report_note'])) $lines[] = (string) $range['report_note'];
+        $lines[] = $this->getReportSiteName() . ' - ' . (string) $range['title'] . ' - ' . $this->formatDisplayRange($range);
+        $lines[] = '';
+        $lines[] = 'Page views: ' . (int) ($summary['views'] ?? 0);
+        $lines[] = 'Unique visitors: ' . (int) ($summary['uniques'] ?? 0);
+        $lines[] = 'Sessions: ' . (int) ($summary['sessions'] ?? 0);
+        $lines[] = '404 hits: ' . (int) ($summary404['views'] ?? 0);
+        $lines[] = 'Events: ' . (int) ($eventSummary['events'] ?? 0);
+        $lines[] = 'Avg. pages/session: ' . number_format((float) ($quality['avg_pages_per_session'] ?? 0), 2);
+        $lines[] = 'Single-page sessions: ' . (string) ($quality['single_page_rate'] ?? 0) . '%';
+        $lines[] = '';
+
+        if(!empty($this->monthlyReportIncludeTopPages)) {
+            $lines[] = 'Top pages:';
+            foreach($topPages as $row) {
+                $label = ($row['page_title'] ?? '') !== '' ? ($row['page_title'] . ' (' . ($row['path'] ?? '') . ')') : ($row['path'] ?? '');
+                $lines[] = '- ' . $label . ': ' . (int) ($row['views'] ?? 0) . ' views';
+            }
+            if(!$topPages) $lines[] = '- No data';
+            $lines[] = '';
+        }
+
+        if(!empty($this->monthlyReportIncludeReferrers)) {
+            $lines[] = 'Top referrers:';
+            foreach($referrers as $row) {
+                $lines[] = '- ' . ($row['referrer_host'] ?? '') . ': ' . (int) ($row['views'] ?? 0) . ' views';
+            }
+            if(!$referrers) $lines[] = '- No data';
+            $lines[] = '';
+        }
+
+        if(!empty($this->monthlyReportIncludeEvents)) {
+            $lines[] = 'Top engagement events:';
+            foreach($topEvents as $row) {
+                $meta = $this->formatMonthlyReportEventMeta($row);
+                $lines[] = '- ' . ($row['event_group'] ?? '') . ' / ' . ($row['event_name'] ?? '') . ($meta !== '' ? ' / ' . $meta : '') . ': ' . (int) ($row['events'] ?? 0) . ' events';
+            }
+            if(!$topEvents) $lines[] = '- No data';
+            $lines[] = '';
+        }
+
+        $lines[] = 'Open full analytics dashboard: ' . $this->getAnalyticsDashboardUrl();
+        return implode("\n", $lines);
+    }
+
+    protected function renderMonthlyReportAdminPreview($isTest = true) {
+        $range = $this->getMonthlyReportPreviewRange();
+        $summary = $this->getSummary($range, []);
+        $quality = $this->getSessionQuality($range, []);
+        $summary404 = $this->get404Summary($range);
+        $topPages = !empty($this->monthlyReportIncludeTopPages) ? $this->getTopPages($range, 10, []) : [];
+        $referrers = !empty($this->monthlyReportIncludeReferrers) ? $this->getTopReferrers($range, 10, []) : [];
+        $eventSummary = !empty($this->monthlyReportIncludeEvents) ? $this->getEventSummary($range, []) : ['events' => 0, 'uniques' => 0, 'sessions' => 0];
+        $topEvents = !empty($this->monthlyReportIncludeEvents) ? $this->getTopEvents($range, 10, []) : [];
+        $html = $this->renderMonthlyReportHtml($range, $summary, $quality, $summary404, $topPages, $referrers, $eventSummary, $topEvents, $isTest);
+
+        if(preg_match('/<body[^>]*>(.*)<\/body>/is', $html, $matches)) {
+            $html = $matches[1];
+        }
+
+        return '<div class="pwna-monthly-report-preview" style="max-width:980px;background:#fff;border:1px solid #d9e1e8;padding:18px;margin-top:8px;">' . $html . '</div>';
+    }
+
+    protected function saveMonthlyReportLastSentPeriod($period) {
+        $period = trim((string) $period);
+        if($period === '') return;
+        $this->monthlyReportLastSentPeriod = $period;
+        try {
+            $this->wire('modules')->saveConfig($this, ['monthlyReportLastSentPeriod' => $period]);
+        } catch(\Throwable $e) {
+            try {
+                $this->wire('modules')->saveConfig('NativeAnalytics', ['monthlyReportLastSentPeriod' => $period]);
+            } catch(\Throwable $e2) {
+                $this->wire('log')->save('native-analytics', 'Could not save monthly report marker: ' . $e2->getMessage());
+            }
+        }
     }
 
 

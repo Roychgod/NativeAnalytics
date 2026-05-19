@@ -1,10 +1,10 @@
-NativeAnalytics 1.0.19
+NativeAnalytics 1.0.20
 
 # NativeAnalytics
 
 Native first-party analytics module for ProcessWire CMS. It tracks traffic and engagement directly inside ProcessWire, without Google Analytics or external APIs.
 
-## Features in v1.0.19
+## Features in v1.0.20
 
 - Page views, unique visitors and sessions
 - Current visitors based on active sessions
@@ -22,6 +22,7 @@ Native first-party analytics module for ProcessWire CMS. It tracks traffic and e
 - Server-side pageview tracking with optional event JS tracking, bot filtering and optional consent cookie gate
 - Cookie-less visitor/session storage mode for EU sites
 - PrivacyWire localStorage consent helper
+- Optional monthly email reports with configurable recipients, report sections and PDF attachment
 
 ## Installation
 
@@ -52,7 +53,6 @@ This version already covers the core analytics needs for most ProcessWire sites:
 ## Optional future upgrades
 
 - Conversion goals and funnels
-- Scheduled email reports
 - Alerts for traffic spikes or drops
 - Page-level engagement score
 - Multi-site analytics (per-site dashboards inside a multi-site ProcessWire install)
@@ -126,3 +126,23 @@ This release is renamed to **NativeAnalytics** and is intended as a fresh instal
 - Improved the compact page-level analytics box shown inside ProcessPageEdit.
 - The page edit analytics summary now uses a small responsive card grid instead of plain stacked text.
 - The admin CSS is explicitly loaded for the page edit analytics box, so the mini summary is styled correctly outside the main analytics dashboard.
+
+## 1.0.20 notes
+
+- Added optional monthly email reports.
+- Reports are sent once per month for the previous calendar month via ProcessWire/WireMail.
+- Module settings now include report recipients, send day of month, optional sender email and section toggles for top pages, referrers and engagement events.
+- Added **Send test report now** for manually testing report delivery from module settings.
+- Added **Report preview**, so admins can view the monthly report directly in the module settings before sending it.
+- Test/preview reports use the previous calendar month when data exists, and automatically fall back to current month-to-date if the previous month has no data yet.
+- Test reports are clearly marked as `[TEST]` and do not update the last sent month marker.
+
+- Added optional PDF attachment for monthly reports, enabled by default.
+- Test reports and scheduled reports can now include a clean PDF version of the same analytics summary.
+- Report event targets now avoid full external URLs in the email body to prevent email clients from showing unrelated rich link previews, for example YouTube previews.
+- Module info version now uses an integer version value (`1020`) so the ProcessWire modules directory / Upgrade module can detect the version reliably.
+
+- Improved the PDF report layout and made PDF text handling more robust for special characters and punctuation.
+- Added a setting to hide/show the compact page analytics summary in ProcessPageEdit.
+- Improved spacing above the Page Edit analytics summary and made the “Open full analytics” button behave more like a native ProcessWire admin button.
+- Hardened inline JavaScript JSON output to avoid unsafe `</script>` edge cases in page titles or other dynamic values.

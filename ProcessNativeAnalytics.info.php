@@ -3,7 +3,7 @@
 $info = array(
     'title' => 'NativeAnalytics Dashboard',
     'summary' => 'Dashboard for the NativeAnalytics module.',
-    'version' => 1020,
+    'version' => 1021,
     'author' => 'Pyxios - Roych (www.pyxios.com)',
     'permission' => 'nativeanalytics-view',
     'icon' => 'area-chart',

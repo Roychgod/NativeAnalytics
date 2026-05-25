@@ -1,8 +1,12 @@
 .pwna-cards {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
   gap: 12px;
   margin: 16px 0;
+  align-items: stretch;
+}
+.pwna-goal-cards {
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
 }
 .pwna-card,
 .pwna-panel {
@@ -14,7 +18,11 @@
   box-sizing: border-box;
 }
 .pwna-card {
-  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  padding: 16px;
 }
 .pwna-panel + .pwna-panel {
   margin-top: 16px;
@@ -29,14 +37,17 @@
 }
 
 .pwna-card-label {
+  display: block;
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: #607384;
-  margin-bottom: 6px;
+  line-height: 1.25;
 }
 .pwna-card-value {
-  font-size: 24px;
+  display: block;
+  color: #1f2d3a;
+  font-size: 28px;
   font-weight: 700;
   line-height: 1.1;
 }
@@ -436,7 +447,21 @@
 .pwna-compare-cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(145px,1fr)); gap:12px; margin:16px 0; width:100%; }
 .pwna-compare-card { background:#fff; border:1px solid #d9e1ea; border-radius: 0; box-shadow:0 2px 10px rgba(18,39,63,.04); padding:14px; min-width:0; box-sizing:border-box; }
 .pwna-compare-meta { display:flex; justify-content:space-between; gap:12px; align-items:start; margin-top:10px; font-size:12px; color:#607384; }
-.pwna-card-sub { margin-top:8px; color:#607384; font-size:12px; }
+.pwna-card-sub {
+  display: block;
+  margin-top: 3px;
+  color: #607384;
+  font-size: 12px;
+  line-height: 1.35;
+}
+.pwna-goal-trend-panel .pwna-empty-state {
+  margin: 12px 0 0;
+  padding: 14px 16px;
+  border: 1px dashed #cfdbe7;
+  background: #f8fbfe;
+  line-height: 1.45;
+}
+
 .pwna-delta { display:inline-flex; align-items:center; gap:6px; padding:4px 9px; border-radius: 0; font-size:12px; font-weight:700; }
 .pwna-delta.is-up { background:#edf9f0; color:#1b7f3a; }
 .pwna-delta.is-down { background:#fff1f1; color:#ba2d2d; }
@@ -1276,4 +1301,179 @@ button.pwna-subtab {
 .pwna-floating-tip[data-side="left"] .pwna-floating-tip-arrow {
   right: -6px;
   top: calc(var(--pwna-arrow-y, 50%) - 6px);
+}
+
+.pwna-goal-form {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #e5edf5;
+}
+.pwna-goal-detail {
+  margin-top: 12px;
+  border: 1px solid #dfe8f1;
+  background: #fff;
+}
+.pwna-goal-detail > summary {
+  cursor: pointer;
+  padding: 12px 14px;
+  font-weight: 700;
+  color: #263747;
+  background: #f8fbfe;
+}
+.pwna-goal-detail[open] > summary {
+  border-bottom: 1px solid #e5edf5;
+}
+.pwna-goal-detail .pwna-goal-form,
+.pwna-goal-detail .pwna-delete-goal-form {
+  margin: 12px;
+}
+.pwna-checkbox-field > label {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-height: 42px;
+  padding: 8px 10px;
+  border: 1px solid #d7e0ea;
+  background: #fff;
+}
+.pwna-checkbox-field input[type="checkbox"] {
+  width: auto;
+  height: auto;
+  min-height: 0;
+}
+.pwna-muted {
+  color: #607384;
+  font-weight: 400;
+}
+
+/* Goals setup improvements */
+.pwna-goals-intro-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(280px, .9fr);
+  gap: 16px;
+  align-items: center;
+}
+.pwna-goals-intro-panel h2 {
+  margin: 0 0 6px;
+}
+.pwna-goal-steps {
+  display: grid;
+  gap: 8px;
+}
+.pwna-goal-steps > div {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  padding: 9px 10px;
+  border: 1px solid #e3eaf1;
+  background: #f8fbfe;
+}
+.pwna-goal-steps strong {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid #cfd8e3;
+  background: #fff;
+  color: #1f2d3a;
+  font-size: 12px;
+}
+.pwna-goal-steps span {
+  color: #4b5f72;
+  font-size: 12px;
+  line-height: 1.35;
+}
+.pwna-goal-guide-panel .pwna-goal-example-list {
+  display: grid;
+  gap: 10px;
+}
+.pwna-goal-example {
+  padding: 10px 12px;
+  border: 1px solid #e3eaf1;
+  background: #fff;
+}
+.pwna-goal-example strong,
+.pwna-goal-example span {
+  display: block;
+}
+.pwna-goal-example strong {
+  margin-bottom: 5px;
+  color: #1f2d3a;
+}
+.pwna-goal-example span {
+  color: #607384;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.pwna-goal-builder-panel {
+  margin-top: 16px;
+}
+.pwna-goal-form {
+  padding: 12px;
+  border: 1px solid #e3eaf1;
+  background: #fbfdff;
+  margin: 10px 0 16px;
+}
+.pwna-goal-section {
+  margin: 0 0 14px;
+}
+.pwna-goal-section[hidden] {
+  display: none !important;
+}
+.pwna-goal-section > h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+.pwna-field-help {
+  display: block;
+  margin-top: 5px;
+  color: #6b7d8f;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.35;
+}
+.pwna-goal-form .pwna-field {
+  min-width: 0;
+}
+.pwna-goal-form .pwna-field > span {
+  display: block;
+  margin-bottom: 5px;
+  color: #35495a;
+  font-weight: 700;
+}
+.pwna-checkbox-field > label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 42px;
+  padding: 0 0 0 2px;
+  font-weight: 400;
+}
+.pwna-span-all {
+  grid-column: 1 / -1;
+}
+.pwna-goal-detail {
+  margin: 8px 0;
+  border: 1px solid #e3eaf1;
+  background: #fff;
+}
+.pwna-goal-detail > summary {
+  cursor: pointer;
+  padding: 11px 12px;
+  font-weight: 700;
+  color: #1f2d3a;
+}
+.pwna-goal-detail .pwna-goal-form {
+  margin: 0 12px 12px;
+}
+.pwna-delete-goal-form {
+  margin: 0 12px 12px;
+}
+.pwna-configured-goals-title {
+  margin-top: 18px !important;
+}
+@media (max-width: 1000px) {
+  .pwna-goals-intro-panel { grid-template-columns: 1fr; }
 }

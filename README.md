@@ -1,10 +1,10 @@
-NativeAnalytics 1.0.20
+NativeAnalytics 1.0.21
 
 # NativeAnalytics
 
 Native first-party analytics module for ProcessWire CMS. It tracks traffic and engagement directly inside ProcessWire, without Google Analytics or external APIs.
 
-## Features in v1.0.20
+## Features in v1.0.21
 
 - Page views, unique visitors and sessions
 - Current visitors based on active sessions
@@ -12,10 +12,13 @@ Native first-party analytics module for ProcessWire CMS. It tracks traffic and e
 - Referrers, UTM campaigns, browser/device/OS breakdowns
 - Internal search-term tracking via query parameters (`q`, `s`, `search` by default)
 - 404 hit reporting for missing URLs
-- Overview, Compare, Sources, Engagement and System tabs
+- Overview, Engagement, Goals, Compare, Sources and System tabs
 - Compare mode for previous period and same period last year
 - CSV, PDF and DOCX exports
 - Event tracking for forms, downloads, contact links, outbound links and custom CTA events
+- Goal tracking with event-based and page/path-based goals
+- Conversion rates based on sessions or unique visitors
+- Event and goal daily aggregates for high-traffic retention workflows
 - Tracking helper with copy-ready snippets and a mini snippet generator
 - Per-page mini analytics box inside `ProcessPageEdit`
 - Daily aggregate rebuild helpers and data cleanup tools
@@ -49,10 +52,11 @@ This version already covers the core analytics needs for most ProcessWire sites:
 - engagement/event tracking
 - exportable reports
 - helper tools for custom tracked CTAs
+- basic goal/conversion tracking
 
 ## Optional future upgrades
 
-- Conversion goals and funnels
+- Funnel reports across multiple goals
 - Alerts for traffic spikes or drops
 - Page-level engagement score
 - Multi-site analytics (per-site dashboards inside a multi-site ProcessWire install)
@@ -146,3 +150,22 @@ This release is renamed to **NativeAnalytics** and is intended as a fresh instal
 - Added a setting to hide/show the compact page analytics summary in ProcessPageEdit.
 - Improved spacing above the Page Edit analytics summary and made the “Open full analytics” button behave more like a native ProcessWire admin button.
 - Hardened inline JavaScript JSON output to avoid unsafe `</script>` edge cases in page titles or other dynamic values.
+
+
+## 1.0.21 notes
+
+- Added a dedicated **Goals** tab for tracking meaningful conversions directly inside ProcessWire.
+- Goals can be based on tracked engagement events, such as form submits, downloads, phone/email clicks, outbound/custom CTA clicks, or on page/path rules such as thank-you and confirmation pages.
+- Added conversion-rate reporting based on either sessions or unique visitors.
+- Added Goals overview cards, a goal trend chart, and a goals/conversion-rate table.
+- Added a guided Goal setup panel with helper text, quick setup presets, recent tracked event selection, recent page/path selection, and editable datalist suggestions for event groups, event names, labels, targets and paths.
+- Improved the Goals empty states so new installs do not show a large empty chart before goals or conversions exist.
+- Added new aggregate tables for event and goal reporting: `pwna_event_daily` and `pwna_goal_daily`.
+- Added goal definition storage in `pwna_goals`.
+- Added raw event retention settings and a high-traffic helper option for aggregate-first maintenance workflows.
+- Added extra composite indexes for larger datasets and more efficient filtered reporting.
+- Daily and hourly maintenance now rebuilds traffic, event and goal aggregates.
+- Maintenance actions now include raw event purging, and analytics reset now clears hit/event/session/aggregate data while keeping configured goal definitions.
+- Fixed the Goal trend chart so it plots goal completions correctly, while still showing unique visitors and sessions in the tooltip.
+- Fixed chart x-axis labels so long date/time labels remain fully visible on the right edge of all SVG charts.
+- Updated module version metadata to `1.0.21` / integer `1021` for both NativeAnalytics and the dashboard process module.

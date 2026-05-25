@@ -2,11 +2,14 @@
 
 class NativeAnalytics extends WireData implements Module, ConfigurableModule {
 
-    const VERSION = '1.0.20';
+    const VERSION = '1.0.21';
     const HITS_TABLE = 'pwna_hits';
     const DAILY_TABLE = 'pwna_daily';
     const SESSIONS_TABLE = 'pwna_sessions';
     const EVENTS_TABLE = 'pwna_events';
+    const EVENT_DAILY_TABLE = 'pwna_event_daily';
+    const GOALS_TABLE = 'pwna_goals';
+    const GOAL_DAILY_TABLE = 'pwna_goal_daily';
 
     protected $defaults = [
         'trackingEnabled' => 1,
@@ -14,6 +17,8 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         'requireConsent' => 0,
         'consentCookieName' => 'pwna_consent',
         'rawRetentionDays' => 90,
+        'rawEventRetentionDays' => 180,
+        'highTrafficMode' => 0,
         'realtimeWindowMinutes' => 5,
         'ignoreQueryString' => 1,
         'excludeRoles' => ['superuser'],
@@ -43,8 +48,8 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
     public static function getModuleInfo() {
         return [
             'title' => 'NativeAnalytics',
-            'summary' => 'Native first-party analytics dashboard for ProcessWire with traffic, compare, exports and event tracking.',
-            'version' => 1020,
+            'summary' => 'Native first-party analytics dashboard for ProcessWire with traffic, compare, exports, event tracking and goals.',
+            'version' => 1021,
             'author' => 'Pyxios - Roych (www.pyxios.com)',
             'href' => 'https://processwire.com/talk/topic/31808-native-analytics-%E2%80%94-a-native-analytics-module-for-processwire/',
             'repo' => 'https://github.com/Roychgod/NativeAnalytics',
@@ -141,6 +146,9 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
                 $this->uninstallDashboardModule();
             }
             $db = $this->wire('database');
+            $db->exec("DROP TABLE IF EXISTS `" . self::GOAL_DAILY_TABLE . "`");
+            $db->exec("DROP TABLE IF EXISTS `" . self::GOALS_TABLE . "`");
+            $db->exec("DROP TABLE IF EXISTS `" . self::EVENT_DAILY_TABLE . "`");
             $db->exec("DROP TABLE IF EXISTS `" . self::EVENTS_TABLE . "`");
             $db->exec("DROP TABLE IF EXISTS `" . self::SESSIONS_TABLE . "`");
             $db->exec("DROP TABLE IF EXISTS `" . self::DAILY_TABLE . "`");
@@ -383,8 +391,80 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             KEY `session_hash` (`session_hash`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
 
+        $db->exec("CREATE TABLE IF NOT EXISTS `" . self::EVENT_DAILY_TABLE . "` (
+            `day` DATE NOT NULL,
+            `page_id` INT UNSIGNED NOT NULL DEFAULT 0,
+            `template` VARCHAR(128) NOT NULL DEFAULT '',
+            `event_group` VARCHAR(64) NOT NULL DEFAULT '',
+            `event_name` VARCHAR(128) NOT NULL DEFAULT '',
+            `event_label` VARCHAR(255) NOT NULL DEFAULT '',
+            `event_label_hash` CHAR(32) NOT NULL,
+            `event_target` VARCHAR(767) NOT NULL DEFAULT '',
+            `event_target_hash` CHAR(32) NOT NULL,
+            `events` INT UNSIGNED NOT NULL DEFAULT 0,
+            `uniques` INT UNSIGNED NOT NULL DEFAULT 0,
+            `sessions` INT UNSIGNED NOT NULL DEFAULT 0,
+            PRIMARY KEY (`day`, `event_group`, `event_name`, `event_label_hash`, `event_target_hash`, `page_id`),
+            KEY `day_group_name` (`day`, `event_group`, `event_name`),
+            KEY `page_id` (`page_id`),
+            KEY `template` (`template`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+        $db->exec("CREATE TABLE IF NOT EXISTS `" . self::GOALS_TABLE . "` (
+            `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+            `title` VARCHAR(191) NOT NULL DEFAULT '',
+            `goal_type` VARCHAR(16) NOT NULL DEFAULT 'event',
+            `event_group` VARCHAR(64) NOT NULL DEFAULT '',
+            `event_name` VARCHAR(128) NOT NULL DEFAULT '',
+            `event_label_contains` VARCHAR(191) NOT NULL DEFAULT '',
+            `event_target_contains` VARCHAR(191) NOT NULL DEFAULT '',
+            `path_contains` VARCHAR(191) NOT NULL DEFAULT '',
+            `conversion_base` VARCHAR(16) NOT NULL DEFAULT 'sessions',
+            `active` TINYINT(1) NOT NULL DEFAULT 1,
+            `created_at` DATETIME NOT NULL,
+            `updated_at` DATETIME NOT NULL,
+            PRIMARY KEY (`id`),
+            KEY `active` (`active`),
+            KEY `goal_type` (`goal_type`),
+            KEY `event_group_name` (`event_group`, `event_name`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+        $db->exec("CREATE TABLE IF NOT EXISTS `" . self::GOAL_DAILY_TABLE . "` (
+            `day` DATE NOT NULL,
+            `goal_id` INT UNSIGNED NOT NULL,
+            `conversions` INT UNSIGNED NOT NULL DEFAULT 0,
+            `uniques` INT UNSIGNED NOT NULL DEFAULT 0,
+            `sessions` INT UNSIGNED NOT NULL DEFAULT 0,
+            PRIMARY KEY (`day`, `goal_id`),
+            KEY `goal_id` (`goal_id`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+        $this->ensureIndex(self::HITS_TABLE, 'created_status', '`created_at`, `status_code`');
+        $this->ensureIndex(self::HITS_TABLE, 'created_page', '`created_at`, `page_id`');
+        $this->ensureIndex(self::HITS_TABLE, 'created_template', '`created_at`, `template`');
+        $this->ensureIndex(self::HITS_TABLE, 'created_path', '`created_at`, `path_hash`');
+        $this->ensureIndex(self::HITS_TABLE, 'created_session', '`created_at`, `session_hash`');
+        $this->ensureIndex(self::EVENTS_TABLE, 'created_group_name', '`created_at`, `event_group`, `event_name`');
+        $this->ensureIndex(self::EVENTS_TABLE, 'created_page', '`created_at`, `page_id`');
+        $this->ensureIndex(self::EVENTS_TABLE, 'created_template', '`created_at`, `template`');
+        $this->ensureIndex(self::EVENTS_TABLE, 'created_session', '`created_at`, `session_hash`');
 
         $done = true;
+    }
+
+    protected function ensureIndex($table, $name, $columns) {
+        $table = preg_replace('/[^a-zA-Z0-9_]+/', '', (string) $table);
+        $name = preg_replace('/[^a-zA-Z0-9_]+/', '', (string) $name);
+        if($table === '' || $name === '' || trim((string) $columns) === '') return;
+        try {
+            $db = $this->wire('database');
+            $stmt = $db->prepare("SHOW INDEX FROM `{$table}` WHERE Key_name = :name");
+            $stmt->execute([':name' => $name]);
+            if($stmt->fetch(\PDO::FETCH_ASSOC)) return;
+            $db->exec("ALTER TABLE `{$table}` ADD KEY `{$name}` ({$columns})");
+        } catch(\Throwable $e) {
+            $this->wire('log')->save('native-analytics', 'Index ensure failed for ' . $table . '.' . $name . ': ' . $e->getMessage());
+        }
     }
 
     protected function createPermission($name, $title) {
@@ -409,6 +489,8 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             'requireConsent' => 0,
             'consentCookieName' => 'pwna_consent',
             'rawRetentionDays' => 90,
+            'rawEventRetentionDays' => 180,
+            'highTrafficMode' => 0,
             'realtimeWindowMinutes' => 5,
             'ignoreQueryString' => 1,
             'excludeRoles' => ['superuser'],
@@ -528,6 +610,23 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $f->value = (int) ($data['rawRetentionDays'] ?? 90);
         $f->min = 7;
         $f->description = 'How long raw hit records are kept before old entries can be purged. Aggregated daily data remains available.';
+        $wrapper->add($f);
+
+        $f = $wire->modules->get('InputfieldInteger');
+        $f->name = 'rawEventRetentionDays';
+        $f->showIf = 'trackingEnabled=1, eventTrackingEnabled=1';
+        $f->label = 'Raw event retention (days)';
+        $f->value = (int) ($data['rawEventRetentionDays'] ?? 180);
+        $f->min = 7;
+        $f->description = 'How long raw engagement event rows are kept before old entries can be purged. Event and goal aggregates remain available.';
+        $wrapper->add($f);
+
+        $f = $wire->modules->get('InputfieldCheckbox');
+        $f->name = 'highTrafficMode';
+        $f->showIf = 'trackingEnabled=1';
+        $f->label = 'High traffic mode helpers';
+        $f->checked = !empty($data['highTrafficMode']);
+        $f->description = 'Adds retention and aggregate-first maintenance helpers for larger sites. Keep raw hits/events for a limited period and keep daily aggregates for long-term reporting.';
         $wrapper->add($f);
 
         $f = $wire->modules->get('InputfieldInteger');
@@ -1355,13 +1454,20 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
     }
 
     public function handleDailyCron() {
-        $this->rebuildDailyAggregate(date('Y-m-d', strtotime('-1 day')));
+        $day = date('Y-m-d', strtotime('-1 day'));
+        $this->rebuildDailyAggregate($day);
+        $this->rebuildEventDailyAggregate($day);
+        $this->rebuildGoalDailyAggregate($day);
         $this->purgeOldHits();
+        $this->purgeOldEvents();
         $this->maybeSendMonthlyReport();
     }
 
     public function handleHourlyCron() {
-        $this->rebuildDailyAggregate(date('Y-m-d'));
+        $day = date('Y-m-d');
+        $this->rebuildDailyAggregate($day);
+        $this->rebuildEventDailyAggregate($day);
+        $this->rebuildGoalDailyAggregate($day);
         $this->purgeOldRealtimeSessions();
     }
 
@@ -1384,9 +1490,56 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $stmt->execute([':day' => $day, ':start' => $day . ' 00:00:00', ':end' => $nextDay . ' 00:00:00']);
     }
 
+    public function rebuildEventDailyAggregate($day) {
+        $day = date('Y-m-d', strtotime($day));
+        $nextDay = date('Y-m-d', strtotime($day . ' +1 day'));
+        $db = $this->wire('database');
+
+        $stmt = $db->prepare("DELETE FROM `" . self::EVENT_DAILY_TABLE . "` WHERE `day` = :day");
+        $stmt->execute([':day' => $day]);
+
+        $sql = "INSERT INTO `" . self::EVENT_DAILY_TABLE . "`
+            (`day`,`page_id`,`template`,`event_group`,`event_name`,`event_label`,`event_label_hash`,`event_target`,`event_target_hash`,`events`,`uniques`,`sessions`)
+            SELECT :day, `page_id`, `template`, `event_group`, `event_name`, `event_label`, MD5(`event_label`), `event_target`, MD5(`event_target`),
+                   COUNT(*), COUNT(DISTINCT `visitor_hash`), COUNT(DISTINCT `session_hash`)
+            FROM `" . self::EVENTS_TABLE . "`
+            WHERE `created_at` >= :start AND `created_at` < :end
+            GROUP BY `page_id`, `template`, `event_group`, `event_name`, `event_label`, `event_target`";
+        $stmt = $db->prepare($sql);
+        $stmt->execute([':day' => $day, ':start' => $day . ' 00:00:00', ':end' => $nextDay . ' 00:00:00']);
+    }
+
+    public function rebuildGoalDailyAggregate($day) {
+        $day = date('Y-m-d', strtotime($day));
+        $range = $this->getDateRangeBetween($day, $day, 1);
+        $db = $this->wire('database');
+        $stmt = $db->prepare("DELETE FROM `" . self::GOAL_DAILY_TABLE . "` WHERE `day` = :day");
+        $stmt->execute([':day' => $day]);
+
+        foreach($this->getGoals(true) as $goal) {
+            if(empty($goal['active'])) continue;
+            $stats = $this->calculateSingleGoalStats($goal, $range, []);
+            $insert = $db->prepare("INSERT INTO `" . self::GOAL_DAILY_TABLE . "` (`day`,`goal_id`,`conversions`,`uniques`,`sessions`) VALUES (:day,:goal_id,:conversions,:uniques,:sessions)");
+            $insert->execute([
+                ':day' => $day,
+                ':goal_id' => (int) $goal['id'],
+                ':conversions' => (int) ($stats['conversions'] ?? 0),
+                ':uniques' => (int) ($stats['uniques'] ?? 0),
+                ':sessions' => (int) ($stats['sessions'] ?? 0),
+            ]);
+        }
+    }
+
     public function purgeOldHits() {
         $cutoff = date('Y-m-d H:i:s', strtotime('-' . max(7, (int) $this->rawRetentionDays) . ' days'));
         $stmt = $this->wire('database')->prepare("DELETE FROM `" . self::HITS_TABLE . "` WHERE `created_at` < :cutoff");
+        $stmt->execute([':cutoff' => $cutoff]);
+    }
+
+
+    public function purgeOldEvents() {
+        $cutoff = date('Y-m-d H:i:s', strtotime('-' . max(7, (int) $this->rawEventRetentionDays) . ' days'));
+        $stmt = $this->wire('database')->prepare("DELETE FROM `" . self::EVENTS_TABLE . "` WHERE `created_at` < :cutoff");
         $stmt->execute([':cutoff' => $cutoff]);
     }
 
@@ -1398,6 +1551,8 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
 
     public function resetAnalyticsData() {
         $db = $this->wire('database');
+        $db->exec("DELETE FROM `" . self::GOAL_DAILY_TABLE . "`");
+        $db->exec("DELETE FROM `" . self::EVENT_DAILY_TABLE . "`");
         $db->exec("DELETE FROM `" . self::EVENTS_TABLE . "`");
         $db->exec("DELETE FROM `" . self::SESSIONS_TABLE . "`");
         $db->exec("DELETE FROM `" . self::DAILY_TABLE . "`");
@@ -1696,7 +1851,16 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
     }
 
     public function getEventSummary($days = 30, array $filters = [], $group = '') {
-        $where = $this->buildEventWhere($filters, $this->getDateRangeForDays($days), $group);
+        $range = $this->getDateRangeForDays($days);
+        if(!empty($this->highTrafficMode)) {
+            $where = $this->buildEventDailyWhere($filters, $range, $group);
+            $sql = "SELECT COALESCE(SUM(events),0) AS events, COALESCE(SUM(uniques),0) AS uniques, COALESCE(SUM(sessions),0) AS sessions
+                    FROM `" . self::EVENT_DAILY_TABLE . "` WHERE {$where['sql']}";
+            $stmt = $this->wire('database')->prepare($sql);
+            $stmt->execute($where['params']);
+            return $stmt->fetch(\PDO::FETCH_ASSOC) ?: ['events' => 0, 'uniques' => 0, 'sessions' => 0];
+        }
+        $where = $this->buildEventWhere($filters, $range, $group);
         $sql = "SELECT COUNT(*) AS events, COUNT(DISTINCT visitor_hash) AS uniques, COUNT(DISTINCT session_hash) AS sessions
                 FROM `" . self::EVENTS_TABLE . "` WHERE {$where['sql']}";
         $stmt = $this->wire('database')->prepare($sql);
@@ -1705,7 +1869,21 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
     }
 
     public function getTopEvents($days = 30, $limit = 15, array $filters = [], $group = '') {
-        $where = $this->buildEventWhere($filters, $this->getDateRangeForDays($days), $group);
+        $range = $this->getDateRangeForDays($days);
+        if(!empty($this->highTrafficMode)) {
+            $where = $this->buildEventDailyWhere($filters, $range, $group);
+            $sql = "SELECT event_group, event_name, event_label, event_target,
+                           COALESCE(SUM(events),0) AS events, COALESCE(SUM(uniques),0) AS uniques, COALESCE(SUM(sessions),0) AS sessions
+                    FROM `" . self::EVENT_DAILY_TABLE . "`
+                    WHERE {$where['sql']}
+                    GROUP BY event_group, event_name, event_label, event_target
+                    ORDER BY events DESC, sessions DESC
+                    LIMIT " . (int) $limit;
+            $stmt = $this->wire('database')->prepare($sql);
+            $stmt->execute($where['params']);
+            return $stmt->fetchAll(\PDO::FETCH_ASSOC) ?: [];
+        }
+        $where = $this->buildEventWhere($filters, $range, $group);
         $sql = "SELECT event_group, event_name, event_label, event_target,
                        COUNT(*) AS events, COUNT(DISTINCT visitor_hash) AS uniques, COUNT(DISTINCT session_hash) AS sessions
                 FROM `" . self::EVENTS_TABLE . "`
@@ -1719,7 +1897,20 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
     }
 
     public function getTopEventTargets($days = 30, $limit = 15, array $filters = [], $group = '') {
-        $where = $this->buildEventWhere($filters, $this->getDateRangeForDays($days), $group, ["event_target != ''"]);
+        $range = $this->getDateRangeForDays($days);
+        if(!empty($this->highTrafficMode)) {
+            $where = $this->buildEventDailyWhere($filters, $range, $group, ["event_target != ''"]);
+            $sql = "SELECT event_group, event_target, COALESCE(SUM(events),0) AS events, COALESCE(SUM(sessions),0) AS sessions
+                    FROM `" . self::EVENT_DAILY_TABLE . "`
+                    WHERE {$where['sql']}
+                    GROUP BY event_group, event_target
+                    ORDER BY events DESC, sessions DESC
+                    LIMIT " . (int) $limit;
+            $stmt = $this->wire('database')->prepare($sql);
+            $stmt->execute($where['params']);
+            return $stmt->fetchAll(\PDO::FETCH_ASSOC) ?: [];
+        }
+        $where = $this->buildEventWhere($filters, $range, $group, ["event_target != ''"]);
         $sql = "SELECT event_group, event_target, COUNT(*) AS events, COUNT(DISTINCT session_hash) AS sessions
                 FROM `" . self::EVENTS_TABLE . "`
                 WHERE {$where['sql']}
@@ -1733,12 +1924,21 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
 
     public function getEventDailySeries($days = 30, array $filters = [], $group = '') {
         $range = $this->getDateRangeForDays($days);
-        $where = $this->buildEventWhere($filters, $range, $group);
-        $sql = "SELECT created_date AS day, COUNT(*) AS views, COUNT(DISTINCT visitor_hash) AS uniques, COUNT(DISTINCT session_hash) AS sessions
-                FROM `" . self::EVENTS_TABLE . "`
-                WHERE {$where['sql']}
-                GROUP BY created_date
-                ORDER BY created_date ASC";
+        if(!empty($this->highTrafficMode)) {
+            $where = $this->buildEventDailyWhere($filters, $range, $group);
+            $sql = "SELECT day, COALESCE(SUM(events),0) AS views, COALESCE(SUM(uniques),0) AS uniques, COALESCE(SUM(sessions),0) AS sessions
+                    FROM `" . self::EVENT_DAILY_TABLE . "`
+                    WHERE {$where['sql']}
+                    GROUP BY day
+                    ORDER BY day ASC";
+        } else {
+            $where = $this->buildEventWhere($filters, $range, $group);
+            $sql = "SELECT created_date AS day, COUNT(*) AS views, COUNT(DISTINCT visitor_hash) AS uniques, COUNT(DISTINCT session_hash) AS sessions
+                    FROM `" . self::EVENTS_TABLE . "`
+                    WHERE {$where['sql']}
+                    GROUP BY created_date
+                    ORDER BY created_date ASC";
+        }
         $stmt = $this->wire('database')->prepare($sql);
         $stmt->execute($where['params']);
         $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC) ?: [];
@@ -1781,6 +1981,26 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
     protected function buildEventWhere(array $filters, array $range, $group = '', array $extra = []) {
         $where = ['created_at >= :start', 'created_at <= :end'];
         $params = [':start' => $range['start'], ':end' => $range['end']];
+        if(!empty($filters['page_id'])) {
+            $where[] = 'page_id = :page_id';
+            $params[':page_id'] = (int) $filters['page_id'];
+        }
+        if(!empty($filters['template'])) {
+            $where[] = 'template = :template';
+            $params[':template'] = (string) $filters['template'];
+        }
+        if($group !== '') {
+            $where[] = 'event_group = :event_group';
+            $params[':event_group'] = (string) $group;
+        }
+        foreach($extra as $fragment) $where[] = $fragment;
+        return ['sql' => implode(' AND ', $where), 'params' => $params];
+    }
+
+
+    protected function buildEventDailyWhere(array $filters, array $range, $group = '', array $extra = []) {
+        $where = ['day >= :start_day', 'day <= :end_day'];
+        $params = [':start_day' => $range['start_date'], ':end_day' => $range['end_date']];
         if(!empty($filters['page_id'])) {
             $where[] = 'page_id = :page_id';
             $params[':page_id'] = (int) $filters['page_id'];
@@ -1985,6 +2205,187 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
     }
 
 
+    public function getGoals($includeInactive = false) {
+        $sql = "SELECT * FROM `" . self::GOALS_TABLE . "`" . ($includeInactive ? '' : ' WHERE `active` = 1') . " ORDER BY `active` DESC, `title` ASC, `id` ASC";
+        try {
+            return $this->wire('database')->query($sql)->fetchAll(\PDO::FETCH_ASSOC) ?: [];
+        } catch(\Throwable $e) {
+            $this->wire('log')->save('native-analytics', 'Goal list failed: ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    public function getGoal($id) {
+        $stmt = $this->wire('database')->prepare("SELECT * FROM `" . self::GOALS_TABLE . "` WHERE `id` = :id");
+        $stmt->execute([':id' => (int) $id]);
+        return $stmt->fetch(\PDO::FETCH_ASSOC) ?: [];
+    }
+
+    public function saveGoal(array $data) {
+        $id = (int) ($data['id'] ?? 0);
+        $title = $this->cleanTextValue((string) ($data['title'] ?? ''), 191);
+        if($title === '') $title = 'Untitled goal';
+        $goalType = in_array((string) ($data['goal_type'] ?? 'event'), ['event', 'page'], true) ? (string) $data['goal_type'] : 'event';
+        $base = in_array((string) ($data['conversion_base'] ?? 'sessions'), ['sessions', 'uniques'], true) ? (string) $data['conversion_base'] : 'sessions';
+        $now = date('Y-m-d H:i:s');
+        $row = [
+            'title' => $title,
+            'goal_type' => $goalType,
+            'event_group' => $this->sanitizeEventGroup((string) ($data['event_group'] ?? '')),
+            'event_name' => $this->sanitizeEventName((string) ($data['event_name'] ?? '')),
+            'event_label_contains' => $this->cleanTextValue((string) ($data['event_label_contains'] ?? ''), 191),
+            'event_target_contains' => $this->cleanTextValue((string) ($data['event_target_contains'] ?? ''), 191),
+            'path_contains' => $this->cleanTextValue((string) ($data['path_contains'] ?? ''), 191),
+            'conversion_base' => $base,
+            'active' => !empty($data['active']) ? 1 : 0,
+            'updated_at' => $now,
+        ];
+
+        $db = $this->wire('database');
+        if($id > 0) {
+            $sets = [];
+            $params = [':id' => $id];
+            foreach($row as $key => $value) {
+                $sets[] = "`{$key}` = :{$key}";
+                $params[':' . $key] = $value;
+            }
+            $stmt = $db->prepare("UPDATE `" . self::GOALS_TABLE . "` SET " . implode(', ', $sets) . " WHERE `id` = :id");
+            $stmt->execute($params);
+            return $id;
+        }
+
+        $row['created_at'] = $now;
+        $columns = array_keys($row);
+        $params = [];
+        foreach($row as $key => $value) $params[':' . $key] = $value;
+        $stmt = $db->prepare("INSERT INTO `" . self::GOALS_TABLE . "` (`" . implode('`,`', $columns) . "`) VALUES (:" . implode(',:', $columns) . ")");
+        $stmt->execute($params);
+        return (int) $db->lastInsertId();
+    }
+
+    public function deleteGoal($id) {
+        $id = (int) $id;
+        if($id < 1) return;
+        $db = $this->wire('database');
+        $stmt = $db->prepare("DELETE FROM `" . self::GOAL_DAILY_TABLE . "` WHERE `goal_id` = :id");
+        $stmt->execute([':id' => $id]);
+        $stmt = $db->prepare("DELETE FROM `" . self::GOALS_TABLE . "` WHERE `id` = :id");
+        $stmt->execute([':id' => $id]);
+    }
+
+    public function getGoalStats($days = 30, array $filters = [], $includeInactive = true) {
+        $range = $this->getDateRangeForDays($days);
+        $base = $this->getSummary($range, $filters);
+        $rows = [];
+        foreach($this->getGoals($includeInactive) as $goal) {
+            $stats = !empty($goal['active']) ? $this->calculateSingleGoalStats($goal, $range, $filters) : ['conversions' => 0, 'uniques' => 0, 'sessions' => 0];
+            $baseMetric = (string) ($goal['conversion_base'] ?? 'sessions') === 'uniques' ? 'uniques' : 'sessions';
+            $denominator = max(0, (int) ($base[$baseMetric] ?? 0));
+            $numerator = max(0, (int) ($stats[$baseMetric] ?? 0));
+            $rate = $denominator > 0 ? round(($numerator / $denominator) * 100, 2) : 0.0;
+            $goal['conversions'] = (int) ($stats['conversions'] ?? 0);
+            $goal['uniques'] = (int) ($stats['uniques'] ?? 0);
+            $goal['sessions'] = (int) ($stats['sessions'] ?? 0);
+            $goal['conversion_rate'] = $rate;
+            $goal['conversion_base_label'] = $baseMetric === 'uniques' ? 'unique visitors' : 'sessions';
+            $goal['base_total'] = $denominator;
+            $rows[] = $goal;
+        }
+        return $rows;
+    }
+
+    protected function calculateSingleGoalStats(array $goal, array $range, array $filters = []) {
+        $type = (string) ($goal['goal_type'] ?? 'event');
+        if($type === 'page') return $this->calculatePageGoalStats($goal, $range, $filters);
+        return $this->calculateEventGoalStats($goal, $range, $filters);
+    }
+
+    protected function calculateEventGoalStats(array $goal, array $range, array $filters = []) {
+        $where = $this->buildEventWhere($filters, $range);
+        $params = $where['params'];
+        $clauses = [$where['sql']];
+        if((string) ($goal['event_group'] ?? '') !== '') {
+            $clauses[] = 'event_group = :goal_event_group';
+            $params[':goal_event_group'] = (string) $goal['event_group'];
+        }
+        if((string) ($goal['event_name'] ?? '') !== '') {
+            $clauses[] = 'event_name = :goal_event_name';
+            $params[':goal_event_name'] = (string) $goal['event_name'];
+        }
+        if((string) ($goal['event_label_contains'] ?? '') !== '') {
+            $clauses[] = 'event_label LIKE :goal_event_label';
+            $params[':goal_event_label'] = '%' . (string) $goal['event_label_contains'] . '%';
+        }
+        if((string) ($goal['event_target_contains'] ?? '') !== '') {
+            $clauses[] = 'event_target LIKE :goal_event_target';
+            $params[':goal_event_target'] = '%' . (string) $goal['event_target_contains'] . '%';
+        }
+        $sql = "SELECT COUNT(*) AS conversions, COUNT(DISTINCT visitor_hash) AS uniques, COUNT(DISTINCT session_hash) AS sessions
+                FROM `" . self::EVENTS_TABLE . "` WHERE " . implode(' AND ', $clauses);
+        $stmt = $this->wire('database')->prepare($sql);
+        $stmt->execute($params);
+        return $stmt->fetch(\PDO::FETCH_ASSOC) ?: ['conversions' => 0, 'uniques' => 0, 'sessions' => 0];
+    }
+
+    protected function calculatePageGoalStats(array $goal, array $range, array $filters = []) {
+        $where = $this->buildWhere($filters, $range, ['status_code <> 404']);
+        $params = $where['params'];
+        $clauses = [$where['sql']];
+        if((string) ($goal['path_contains'] ?? '') !== '') {
+            $clauses[] = 'path LIKE :goal_path';
+            $params[':goal_path'] = '%' . (string) $goal['path_contains'] . '%';
+        }
+        $sql = "SELECT COUNT(*) AS conversions, COUNT(DISTINCT visitor_hash) AS uniques, COUNT(DISTINCT session_hash) AS sessions
+                FROM `" . self::HITS_TABLE . "` WHERE " . implode(' AND ', $clauses);
+        $stmt = $this->wire('database')->prepare($sql);
+        $stmt->execute($params);
+        return $stmt->fetch(\PDO::FETCH_ASSOC) ?: ['conversions' => 0, 'uniques' => 0, 'sessions' => 0];
+    }
+
+    public function getGoalDailySeries($days = 30, array $filters = []) {
+        $range = $this->getDateRangeForDays($days);
+        $indexed = [];
+        if(!empty($this->highTrafficMode) && empty($filters)) {
+            $stmt = $this->wire('database')->prepare("SELECT day, COALESCE(SUM(conversions),0) AS conversions, COALESCE(SUM(uniques),0) AS uniques, COALESCE(SUM(sessions),0) AS sessions FROM `" . self::GOAL_DAILY_TABLE . "` WHERE day >= :start_day AND day <= :end_day GROUP BY day ORDER BY day ASC");
+            $stmt->execute([':start_day' => $range['start_date'], ':end_day' => $range['end_date']]);
+            foreach(($stmt->fetchAll(\PDO::FETCH_ASSOC) ?: []) as $row) $indexed[$row['day']] = $row;
+        }
+
+        $goals = $this->getGoals(false);
+        $series = [];
+        $cursor = strtotime($range['start_date']);
+        $end = strtotime($range['end_date']);
+        while($cursor <= $end) {
+            $day = date('Y-m-d', $cursor);
+            if(isset($indexed[$day])) {
+                $conversions = (int) $indexed[$day]['conversions'];
+                $uniques = (int) $indexed[$day]['uniques'];
+                $sessions = (int) $indexed[$day]['sessions'];
+            } else {
+                $conversions = 0;
+                $uniques = 0;
+                $sessions = 0;
+                $dayRange = $this->getDateRangeBetween($day, $day, 1);
+                foreach($goals as $goal) {
+                    $stats = $this->calculateSingleGoalStats($goal, $dayRange, $filters);
+                    $conversions += (int) ($stats['conversions'] ?? 0);
+                    $uniques += (int) ($stats['uniques'] ?? 0);
+                    $sessions += (int) ($stats['sessions'] ?? 0);
+                }
+            }
+            $series[] = [
+                'day' => $day,
+                'label' => $this->formatDisplayDate($cursor),
+                'time_label' => 'All day',
+                'views' => $conversions,
+                'uniques' => $uniques,
+                'sessions' => $sessions,
+            ];
+            $cursor = strtotime('+1 day', $cursor);
+        }
+        return $series;
+    }
+
     public function getHealthSnapshot() {
         $db = $this->wire('database');
         $snapshot = [
@@ -1997,6 +2398,9 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             'sessions_count' => 0,
             'daily_count' => 0,
             'events_count' => 0,
+            'event_daily_count' => 0,
+            'goals_count' => 0,
+            'goal_daily_count' => 0,
             'last_hit_at' => '',
             'last_session_at' => '',
             'last_event_at' => '',
@@ -2006,6 +2410,9 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             'sessions_count' => self::SESSIONS_TABLE,
             'daily_count' => self::DAILY_TABLE,
             'events_count' => self::EVENTS_TABLE,
+            'event_daily_count' => self::EVENT_DAILY_TABLE,
+            'goals_count' => self::GOALS_TABLE,
+            'goal_daily_count' => self::GOAL_DAILY_TABLE,
         ] as $key => $table) {
             try {
                 $snapshot[$key] = (int) $db->query("SELECT COUNT(*) FROM `{$table}`")->fetchColumn();
@@ -2084,8 +2491,9 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             . '</div>';
     }
 
-    public function renderComparisonChart(array $primarySeries, array $comparisonSeries, $metric = 'views', $chartLabel = 'Comparison chart', $primaryLabel = 'Selected period', $secondaryLabel = 'Comparison period') {
-            $metric = in_array($metric, ['views', 'uniques', 'sessions'], true) ? $metric : 'views';
+    public function renderComparisonChart(array $primarySeries, array $comparisonSeries, $metric = 'views', $chartLabel = 'Comparison chart', $primaryLabel = 'Selected period', $secondaryLabel = 'Comparison period', array $metricLabels = []) {
+        $metric = in_array($metric, ['views', 'uniques', 'sessions'], true) ? $metric : 'views';
+        $metricLabels = array_merge(['views' => 'Views', 'uniques' => 'Uniques', 'sessions' => 'Sessions'], $metricLabels);
         if(!$primarySeries) return '<p>No data yet.</p>';
 
         $width = 920;
@@ -2147,15 +2555,16 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $html .= '<polyline fill="none" class="pwna-line" points="' . implode(' ', $primaryPoints) . '" />';
         $html .= implode('', $circles);
         $html .= '<text x="' . $padX . '" y="' . ($height - 6) . '" class="pwna-label">' . $sanitizer->entities($firstLabel) . '</text>';
-        $html .= '<text x="' . ($padX + $plotWidth - 46) . '" y="' . ($height - 6) . '" class="pwna-label">' . $sanitizer->entities($lastLabel) . '</text>';
+        $html .= '<text x="' . ($padX + $plotWidth) . '" y="' . ($height - 6) . '" class="pwna-label" text-anchor="end">' . $sanitizer->entities($lastLabel) . '</text>';
         $html .= '</svg>';
-        $html .= '<div class="pwna-chart-tooltip" hidden><div class="pwna-chart-tooltip-day"></div><div class="pwna-chart-tooltip-time" hidden></div><div class="pwna-chart-tooltip-grid"><span>Views</span><strong data-pwna-tip="views">0</strong><span>Uniques</span><strong data-pwna-tip="uniques">0</strong><span>Sessions</span><strong data-pwna-tip="sessions">0</strong></div><div class="pwna-chart-tooltip-compare" hidden><div class="pwna-chart-tooltip-day" data-pwna-tip="compare-day"></div><div class="pwna-chart-tooltip-grid"><span>Views</span><strong data-pwna-tip="compare-views">0</strong><span>Uniques</span><strong data-pwna-tip="compare-uniques">0</strong><span>Sessions</span><strong data-pwna-tip="compare-sessions">0</strong></div></div></div>';
+        $html .= '<div class="pwna-chart-tooltip" hidden><div class="pwna-chart-tooltip-day"></div><div class="pwna-chart-tooltip-time" hidden></div><div class="pwna-chart-tooltip-grid"><span>' . $sanitizer->entities($metricLabels['views']) . '</span><strong data-pwna-tip="views">0</strong><span>' . $sanitizer->entities($metricLabels['uniques']) . '</span><strong data-pwna-tip="uniques">0</strong><span>' . $sanitizer->entities($metricLabels['sessions']) . '</span><strong data-pwna-tip="sessions">0</strong></div><div class="pwna-chart-tooltip-compare" hidden><div class="pwna-chart-tooltip-day" data-pwna-tip="compare-day"></div><div class="pwna-chart-tooltip-grid"><span>' . $sanitizer->entities($metricLabels['views']) . '</span><strong data-pwna-tip="compare-views">0</strong><span>' . $sanitizer->entities($metricLabels['uniques']) . '</span><strong data-pwna-tip="compare-uniques">0</strong><span>' . $sanitizer->entities($metricLabels['sessions']) . '</span><strong data-pwna-tip="compare-sessions">0</strong></div></div></div>';
         $html .= '</div>';
         return $html;
     }
 
-    public function renderLineChart(array $series, $metric = 'views', $chartLabel = 'Analytics chart') {
+    public function renderLineChart(array $series, $metric = 'views', $chartLabel = 'Analytics chart', array $metricLabels = []) {
         $metric = in_array($metric, ['views', 'uniques', 'sessions'], true) ? $metric : 'views';
+        $metricLabels = array_merge(['views' => 'Views', 'uniques' => 'Uniques', 'sessions' => 'Sessions'], $metricLabels);
         if(!$series) return '<p>No data yet.</p>';
 
         $width = 920;
@@ -2181,7 +2590,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
 
             $label = (string) ($row['label'] ?? (isset($row['day']) ? $this->formatDisplayDate($row['day']) : ''));
             $timeLabel = (string) ($row['time_label'] ?? (isset($row['hour']) ? sprintf('%02d:00–%02d:59', (int) $row['hour'], (int) $row['hour']) : ''));
-            $title = trim($label . ' ' . $timeLabel) . ' | Views: ' . (int) ($row['views'] ?? 0) . ' | Uniques: ' . (int) ($row['uniques'] ?? 0) . ' | Sessions: ' . (int) ($row['sessions'] ?? 0);
+            $title = trim($label . ' ' . $timeLabel) . ' | ' . $metricLabels['views'] . ': ' . (int) ($row['views'] ?? 0) . ' | ' . $metricLabels['uniques'] . ': ' . (int) ($row['uniques'] ?? 0) . ' | ' . $metricLabels['sessions'] . ': ' . (int) ($row['sessions'] ?? 0);
 
             $circles[] = '<circle class="pwna-point" cx="' . $x . '" cy="' . $y . '" r="4" data-label="' . $sanitizer->entities($label) . '" data-time="' . $sanitizer->entities($timeLabel) . '" data-views="' . (int) ($row['views'] ?? 0) . '" data-uniques="' . (int) ($row['uniques'] ?? 0) . '" data-sessions="' . (int) ($row['sessions'] ?? 0) . '"><title>' . $sanitizer->entities($title) . '</title></circle>';
         }
@@ -2204,9 +2613,9 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $html .= '<polyline fill="none" class="pwna-line" points="' . implode(' ', $points) . '" />';
         $html .= implode('', $circles);
         $html .= '<text x="' . $padX . '" y="' . ($height - 6) . '" class="pwna-label">' . $sanitizer->entities($firstLabel) . '</text>';
-        $html .= '<text x="' . ($padX + $plotWidth - 46) . '" y="' . ($height - 6) . '" class="pwna-label">' . $sanitizer->entities($lastLabel) . '</text>';
+        $html .= '<text x="' . ($padX + $plotWidth) . '" y="' . ($height - 6) . '" class="pwna-label" text-anchor="end">' . $sanitizer->entities($lastLabel) . '</text>';
         $html .= '</svg>';
-        $html .= '<div class="pwna-chart-tooltip" hidden><div class="pwna-chart-tooltip-day"></div><div class="pwna-chart-tooltip-time" hidden></div><div class="pwna-chart-tooltip-grid"><span>Views</span><strong data-pwna-tip="views">0</strong><span>Uniques</span><strong data-pwna-tip="uniques">0</strong><span>Sessions</span><strong data-pwna-tip="sessions">0</strong></div><div class="pwna-chart-tooltip-compare" hidden><div class="pwna-chart-tooltip-day" data-pwna-tip="compare-day"></div><div class="pwna-chart-tooltip-grid"><span>Views</span><strong data-pwna-tip="compare-views">0</strong><span>Uniques</span><strong data-pwna-tip="compare-uniques">0</strong><span>Sessions</span><strong data-pwna-tip="compare-sessions">0</strong></div></div></div>';
+        $html .= '<div class="pwna-chart-tooltip" hidden><div class="pwna-chart-tooltip-day"></div><div class="pwna-chart-tooltip-time" hidden></div><div class="pwna-chart-tooltip-grid"><span>' . $sanitizer->entities($metricLabels['views']) . '</span><strong data-pwna-tip="views">0</strong><span>' . $sanitizer->entities($metricLabels['uniques']) . '</span><strong data-pwna-tip="uniques">0</strong><span>' . $sanitizer->entities($metricLabels['sessions']) . '</span><strong data-pwna-tip="sessions">0</strong></div><div class="pwna-chart-tooltip-compare" hidden><div class="pwna-chart-tooltip-day" data-pwna-tip="compare-day"></div><div class="pwna-chart-tooltip-grid"><span>Views</span><strong data-pwna-tip="compare-views">0</strong><span>Uniques</span><strong data-pwna-tip="compare-uniques">0</strong><span>Sessions</span><strong data-pwna-tip="compare-sessions">0</strong></div></div></div>';
         $html .= '</div>';
         return $html;
     }

@@ -6,7 +6,7 @@ class ProcessNativeAnalytics extends Process {
         return [
             'title' => 'NativeAnalytics Dashboard',
             'summary' => 'Dashboard for the NativeAnalytics module.',
-            'version' => 1020,
+            'version' => 1021,
             'author' => 'Pyxios - Roych (www.pyxios.com)',
             'permission' => 'nativeanalytics-view',
             'icon' => 'area-chart',
@@ -184,6 +184,8 @@ public function ___execute() {
     $topForms = $analytics->getTopEvents($rangeSpec, 10, $filters, 'form');
     $topContacts = $analytics->getTopEvents($rangeSpec, 10, $filters, 'contact');
     $topEventTargets = $analytics->getTopEventTargets($rangeSpec, 12, $filters);
+    $goalStats = $analytics->getGoalStats($rangeSpec, $filters, true);
+    $goalSeries = $analytics->getGoalDailySeries($rangeSpec, $filters);
 
     $this->config->styles->add($analytics->getAssetUrl('assets/admin.css') . '?v=' . rawurlencode($analytics->getAssetVersion('assets/admin.css')));
     $wireTabs = null;
@@ -233,6 +235,17 @@ public function ___execute() {
     $engagementContent .= $this->renderEngagementSubnav($engagementView);
     $engagementContent .= $this->renderEngagementPanels($engagementMetricsContent, $this->renderEventHelperPanel(), $engagementView);
 
+    $goalSuggestions = $this->buildGoalSuggestions($topEvents, $topEventTargets, $pages, $landing);
+    $goalsContent = $this->renderToolbar($rangeMeta, $pageId, $template, $templates, 'goals');
+    $goalsContent .= $this->renderGoalsIntroPanel();
+    $goalsContent .= $this->renderGoalCards($goalStats);
+    $goalsContent .= $this->renderGoalTrendPanel($analytics, $goalSeries, $goalStats);
+    $goalsContent .= '<div class="pwna-grid-2">';
+    $goalsContent .= $this->renderSimpleTable('Goals and conversion rates', ['Goal', 'Rule', 'Type', 'Conversions', 'Unique visitors', 'Sessions', 'Rate'], $this->mapGoalRows($goalStats));
+    $goalsContent .= $this->renderGoalQuickGuidePanel();
+    $goalsContent .= '</div>';
+    $goalsContent .= $this->renderGoalBuilderPanel($analytics, $goalStats, $goalSuggestions);
+
     $sourcesContent = $this->renderToolbar($rangeMeta, $pageId, $template, $templates, 'sources');
     $sourcesContent .= '<div class="pwna-grid-2">';
     $sourcesContent .= $this->renderSimpleTable('Top referrers', ['Referrer', 'Views'], $this->mapGenericRows($referrers, 'referrer_host'));
@@ -259,6 +272,7 @@ public function ___execute() {
         $out .= $wireTabs->render([
             'Overview' => $overviewContent,
             'Engagement' => $engagementContent,
+            'Goals' => $goalsContent,
             'Compare' => $compareContent,
             'Sources' => $sourcesContent,
             'System' => $techContent,
@@ -269,10 +283,11 @@ public function ___execute() {
         $out .= '<div class="pwna-tab-panels">';
         $out .= '<section class="pwna-tab-panel">' . (
             $activeTab === 'engagement' ? $engagementContent : (
+            $activeTab === 'goals' ? $goalsContent : (
             $activeTab === 'compare' ? $compareContent : (
             $activeTab === 'sources' ? $sourcesContent : (
             $activeTab === 'tech' ? $techContent : $overviewContent
-        )))) . '</section>';
+        ))))) . '</section>';
         $out .= '</div>';
     }
 
@@ -567,17 +582,35 @@ startxref
     protected function handlePostActions(NativeAnalytics $analytics) {
         $this->session->CSRF->validate();
         $action = $this->input->post('pwna_action');
+        if($action === 'save_goal') {
+            $analytics->saveGoal($this->input->post->getArray());
+            $this->message('Goal saved.');
+        }
+        if($action === 'delete_goal') {
+            $analytics->deleteGoal((int) $this->input->post('goal_id'));
+            $this->warning('Goal deleted.');
+        }
         if($action === 'rebuild_today') {
-            $analytics->rebuildDailyAggregate(date('Y-m-d'));
+            $day = date('Y-m-d');
+            $analytics->rebuildDailyAggregate($day);
+            $analytics->rebuildEventDailyAggregate($day);
+            $analytics->rebuildGoalDailyAggregate($day);
             $this->message("Rebuilt today's aggregate data.");
         }
         if($action === 'rebuild_yesterday') {
-            $analytics->rebuildDailyAggregate(date('Y-m-d', strtotime('-1 day')));
+            $day = date('Y-m-d', strtotime('-1 day'));
+            $analytics->rebuildDailyAggregate($day);
+            $analytics->rebuildEventDailyAggregate($day);
+            $analytics->rebuildGoalDailyAggregate($day);
             $this->message("Rebuilt yesterday's aggregate data.");
         }
         if($action === 'purge_hits') {
             $analytics->purgeOldHits();
             $this->message('Old raw hits purged.');
+        }
+        if($action === 'purge_events') {
+            $analytics->purgeOldEvents();
+            $this->message('Old raw events purged.');
         }
         if($action === 'purge_realtime') {
             $analytics->purgeOldRealtimeSessions();
@@ -655,6 +688,9 @@ protected function renderInlineCssFallback() {
             ['Realtime sessions rows', '<span id="pwna-health-sessions">' . number_format((int) ($health['sessions_count'] ?? 0)) . '</span>'],
             ['Daily aggregate rows', '<span id="pwna-health-daily">' . number_format((int) ($health['daily_count'] ?? 0)) . '</span>'],
             ['Tracked events rows', '<span id="pwna-health-events">' . number_format((int) ($health['events_count'] ?? 0)) . '</span>'],
+            ['Event aggregate rows', number_format((int) ($health['event_daily_count'] ?? 0))],
+            ['Configured goals', number_format((int) ($health['goals_count'] ?? 0))],
+            ['Goal aggregate rows', number_format((int) ($health['goal_daily_count'] ?? 0))],
             ['Last raw hit', '<span id="pwna-health-last-hit">' . $this->sanitizer->entities((string) ($health['last_hit_at'] ?? '—')) . '</span>'],
             ['Last realtime session', '<span id="pwna-health-last-session">' . $this->sanitizer->entities((string) ($health['last_session_at'] ?? '—')) . '</span>'],
             ['Last tracked event', '<span id="pwna-health-last-event">' . $this->sanitizer->entities((string) ($health['last_event_at'] ?? '—')) . '</span>'],
@@ -859,6 +895,7 @@ protected function renderWireTabsScript($activeTab, $engagementView) {
     $labels = [
         'overview' => 'Overview',
         'engagement' => 'Engagement',
+        'goals' => 'Goals',
         'compare' => 'Compare',
         'sources' => 'Sources',
         'tech' => 'System',
@@ -1034,7 +1071,7 @@ protected function renderEngagementPanels($metricsContent, $helperContent, $acti
 
 protected function getActiveTab() {
     $tab = $this->sanitizer->name((string) $this->input->get('tab'));
-    if(!in_array($tab, ['overview', 'engagement', 'compare', 'sources', 'tech'], true)) $tab = 'overview';
+    if(!in_array($tab, ['overview', 'engagement', 'goals', 'compare', 'sources', 'tech'], true)) $tab = 'overview';
     return $tab;
 }
 
@@ -1072,6 +1109,7 @@ protected function renderTabNav($activeTab, array $rangeMeta, $pageId, $template
     $tabs = [
         'overview' => 'Overview',
         'engagement' => 'Engagement',
+        'goals' => 'Goals',
         'compare' => 'Compare',
         'sources' => 'Sources',
         'tech' => 'System',
@@ -1084,6 +1122,346 @@ protected function renderTabNav($activeTab, array $rangeMeta, $pageId, $template
         $out .= '<a class="' . $class . '" href="./?' . $this->sanitizer->entities(http_build_query($params)) . '">' . $this->sanitizer->entities($label) . '</a>';
     }
     $out .= '</nav>';
+    return $out;
+}
+
+protected function renderGoalsIntroPanel() {
+    $out = '<div class="pwna-panel pwna-goals-intro-panel">';
+    $out .= '<div class="pwna-goals-intro-main">';
+    $out .= '<h2>Goals turn tracked actions into conversions</h2>';
+    $out .= '<p class="pwna-note">Use Goals when a normal page view or engagement event means business value: a submitted form, a booking button click, a downloaded price list, a phone/email click, or a visit to a thank-you page.</p>';
+    $out .= '</div>';
+    $out .= '<div class="pwna-goal-steps">';
+    $out .= '<div><strong>1</strong><span>Choose an event or page rule</span></div>';
+    $out .= '<div><strong>2</strong><span>NativeAnalytics counts matching conversions</span></div>';
+    $out .= '<div><strong>3</strong><span>Rate = conversions / sessions or visitors</span></div>';
+    $out .= '</div>';
+    $out .= '</div>';
+    return $out;
+}
+
+protected function renderGoalQuickGuidePanel() {
+    $out = '<div class="pwna-panel pwna-goal-guide-panel">';
+    $out .= '<h2>Goal examples</h2>';
+    $out .= '<p class="pwna-note">Start with one or two important conversions. You can always add more later.</p>';
+    $out .= '<div class="pwna-goal-example-list">';
+    $out .= '<div class="pwna-goal-example"><strong>Contact form conversion</strong><span>Goal type: Event based<br>Event group: <code>form</code><br>Event name: <code>form_submit</code></span></div>';
+    $out .= '<div class="pwna-goal-example"><strong>Important CTA click</strong><span>Goal type: Event based<br>Event group: <code>lead</code> or <code>custom</code><br>Event name: your <code>data-pwna-event</code> value</span></div>';
+    $out .= '<div class="pwna-goal-example"><strong>Thank-you page</strong><span>Goal type: Page/path based<br>Page/path contains: <code>/thank-you/</code>, <code>/thanks/</code> or your confirmation page path</span></div>';
+    $out .= '</div>';
+    $out .= '</div>';
+    return $out;
+}
+
+protected function buildGoalSuggestions(array $topEvents, array $topEventTargets, array $pages, array $landing) {
+    $suggestions = [
+        'groups' => [],
+        'names' => [],
+        'labels' => [],
+        'targets' => [],
+        'paths' => [],
+        'events' => [],
+        'pages' => [],
+    ];
+
+    foreach($topEvents as $row) {
+        $group = (string) ($row['event_group'] ?? '');
+        $name = (string) ($row['event_name'] ?? '');
+        $label = (string) ($row['event_label'] ?? '');
+        $target = (string) ($row['event_target'] ?? '');
+        $events = (int) ($row['events'] ?? 0);
+        $this->addUniqueSuggestion($suggestions['groups'], $group);
+        $this->addUniqueSuggestion($suggestions['names'], $name);
+        $this->addUniqueSuggestion($suggestions['labels'], $label);
+        $this->addUniqueSuggestion($suggestions['targets'], $target);
+        if($group !== '' || $name !== '') {
+            $key = md5($group . '|' . $name . '|' . $label . '|' . $target);
+            if(!isset($suggestions['events'][$key])) {
+                $title = trim(($label !== '' ? $label : $name) . ' — ' . trim($group . ' / ' . $name, ' /'));
+                if($events > 0) $title .= ' (' . number_format($events) . ')';
+                $suggestions['events'][$key] = [
+                    'title' => $title,
+                    'event_group' => $group,
+                    'event_name' => $name,
+                    'event_label' => $label,
+                    'event_target' => $target,
+                ];
+            }
+        }
+    }
+
+    foreach($topEventTargets as $row) {
+        $this->addUniqueSuggestion($suggestions['groups'], (string) ($row['event_group'] ?? ''));
+        $this->addUniqueSuggestion($suggestions['targets'], (string) ($row['event_target'] ?? ''));
+    }
+
+    foreach(array_merge($pages, $landing) as $row) {
+        $path = (string) ($row['path'] ?? '');
+        if($path === '') continue;
+        $label = (string) ($row['page_title'] ?? '');
+        if($label === '') $label = $path;
+        else $label .= ' (' . $path . ')';
+        $this->addUniqueSuggestion($suggestions['paths'], $path, $label);
+        if(!isset($suggestions['pages'][$path])) {
+            $suggestions['pages'][$path] = ['path' => $path, 'label' => $label];
+        }
+    }
+
+    foreach(['groups', 'names', 'labels', 'targets', 'paths'] as $key) {
+        $suggestions[$key] = array_slice($suggestions[$key], 0, 40, true);
+    }
+    $suggestions['events'] = array_slice($suggestions['events'], 0, 40, true);
+    $suggestions['pages'] = array_slice($suggestions['pages'], 0, 40, true);
+    return $suggestions;
+}
+
+protected function addUniqueSuggestion(array &$list, $value, $label = '') {
+    $value = trim(strip_tags((string) $value));
+    if($value === '') return;
+    if(!isset($list[$value])) $list[$value] = trim(strip_tags((string) $label)) ?: $value;
+}
+
+protected function renderGoalCards(array $goals) {
+    $active = 0;
+    $conversions = 0;
+    $sessions = 0;
+    $bestRate = 0.0;
+    foreach($goals as $goal) {
+        if(!empty($goal['active'])) $active++;
+        if(empty($goal['active'])) continue;
+        $conversions += (int) ($goal['conversions'] ?? 0);
+        $sessions += (int) ($goal['sessions'] ?? 0);
+        $bestRate = max($bestRate, (float) ($goal['conversion_rate'] ?? 0));
+    }
+    $cards = [
+        ['Configured goals', count($goals), 'Goal definitions'],
+        ['Active goals', $active, 'Included in reports'],
+        ['Goal conversions', $conversions, 'Matching events/page hits'],
+        ['Goal sessions', $sessions, 'Sessions matched by active goals'],
+        ['Best rate', number_format($bestRate, 2) . '%', 'Highest conversion rate'],
+    ];
+    $out = '<div class="pwna-cards pwna-goal-cards">';
+    foreach($cards as $card) {
+        $out .= '<div class="pwna-card pwna-goal-card"><div class="pwna-card-label">' . $this->sanitizer->entities($card[0]) . '</div><div class="pwna-card-value">' . $this->sanitizer->entities((string) $card[1]) . '</div><div class="pwna-card-sub">' . $this->sanitizer->entities($card[2]) . '</div></div>';
+    }
+    $out .= '</div>';
+    return $out;
+}
+
+protected function renderGoalTrendPanel(NativeAnalytics $analytics, array $goalSeries, array $goals) {
+    $configured = count($goals);
+    $active = 0;
+    $hasConversions = false;
+    foreach($goals as $goal) {
+        if(!empty($goal['active'])) $active++;
+    }
+    foreach($goalSeries as $row) {
+        if((int) ($row['views'] ?? 0) > 0 || (int) ($row['sessions'] ?? 0) > 0 || (int) ($row['uniques'] ?? 0) > 0) {
+            $hasConversions = true;
+            break;
+        }
+    }
+
+    $out = '<div class="pwna-panel pwna-goal-trend-panel"><h2>Goal trend</h2>';
+    if($configured < 1) {
+        $out .= '<p class="pwna-empty pwna-empty-state">No goals configured yet. Create your first event-based or page/path-based goal below, then conversions will appear here.</p>';
+        return $out . '</div>';
+    }
+    if($active < 1) {
+        $out .= '<p class="pwna-empty pwna-empty-state">All configured goals are inactive. Activate at least one goal to include it in conversion reports.</p>';
+        return $out . '</div>';
+    }
+    if(!$hasConversions) {
+        $out .= '<p class="pwna-empty pwna-empty-state">No goal conversions found in the selected date range yet. The trend chart will appear as soon as one of the active goal rules matches a tracked event or page hit.</p>';
+        return $out . '</div>';
+    }
+
+    $out .= '<p class="pwna-note">Daily goal completions for active goals in the selected period.</p>';
+    $out .= $analytics->renderLineChart($goalSeries, 'views', 'Goal conversions by day', ['views' => 'Conversions', 'uniques' => 'Unique visitors', 'sessions' => 'Sessions']);
+    $out .= '</div>';
+    return $out;
+}
+
+protected function mapGoalRows(array $goals) {
+    $rows = [];
+    foreach($goals as $goal) {
+        $title = (string) ($goal['title'] ?? 'Untitled goal');
+        if(empty($goal['active'])) $title .= ' (inactive)';
+        $type = (string) ($goal['goal_type'] ?? 'event') === 'page' ? 'Page/path' : 'Event';
+        $rate = number_format((float) ($goal['conversion_rate'] ?? 0), 2) . '% of ' . (string) ($goal['conversion_base_label'] ?? 'sessions');
+        $rows[] = [
+            $this->sanitizer->entities($title),
+            '<span class="pwna-break">' . $this->describeGoalRule($goal) . '</span>',
+            $this->sanitizer->entities($type),
+            number_format((int) ($goal['conversions'] ?? 0)),
+            number_format((int) ($goal['uniques'] ?? 0)),
+            number_format((int) ($goal['sessions'] ?? 0)),
+            $this->sanitizer->entities($rate),
+        ];
+    }
+    if(!$rows) $rows[] = ['No goals configured yet.', '', '', '', '', '', ''];
+    return $rows;
+}
+
+protected function describeGoalRule(array $goal) {
+    if((string) ($goal['goal_type'] ?? 'event') === 'page') {
+        $path = (string) ($goal['path_contains'] ?? '');
+        return $path !== '' ? 'Path contains <code>' . $this->sanitizer->entities($path) . '</code>' : '<span class="pwna-muted">No page/path rule yet</span>';
+    }
+    $parts = [];
+    if((string) ($goal['event_group'] ?? '') !== '') $parts[] = 'Group = <code>' . $this->sanitizer->entities((string) $goal['event_group']) . '</code>';
+    if((string) ($goal['event_name'] ?? '') !== '') $parts[] = 'Event = <code>' . $this->sanitizer->entities((string) $goal['event_name']) . '</code>';
+    if((string) ($goal['event_label_contains'] ?? '') !== '') $parts[] = 'Label contains <code>' . $this->sanitizer->entities((string) $goal['event_label_contains']) . '</code>';
+    if((string) ($goal['event_target_contains'] ?? '') !== '') $parts[] = 'Target contains <code>' . $this->sanitizer->entities((string) $goal['event_target_contains']) . '</code>';
+    if(!$parts) return '<span class="pwna-muted">No event rule yet</span>';
+    return implode('<br>', $parts);
+}
+
+protected function renderGoalBuilderPanel(NativeAnalytics $analytics, array $goals, array $suggestions = []) {
+    if(!$this->user->hasPermission('nativeanalytics-manage')) {
+        return '<div class="pwna-panel"><h2>Goal setup</h2><p class="pwna-note">You need the nativeanalytics-manage permission to create or edit goals.</p></div>';
+    }
+    $out = '<div class="pwna-panel pwna-helper-panel pwna-goal-builder-panel"><h2>Goal setup</h2>';
+    $out .= '<p class="pwna-note">Create goals from existing NativeAnalytics events or from thank-you / confirmation page paths. Use the quick setup and recent tracked values to avoid typing when possible. You can still type custom values into every field.</p>';
+    $out .= $this->renderGoalDatalists($suggestions);
+    $out .= '<h3>Create a new goal</h3>';
+    $out .= $this->renderGoalForm([], $suggestions);
+    if($goals) {
+        $out .= '<h3 class="pwna-configured-goals-title">Configured goals</h3>';
+        foreach($goals as $goal) {
+            $out .= '<details class="pwna-goal-detail"><summary>' . $this->sanitizer->entities((string) ($goal['title'] ?? 'Untitled goal')) . (empty($goal['active']) ? ' <span class="pwna-muted">(inactive)</span>' : '') . '</summary>';
+            $out .= $this->renderGoalForm($goal, $suggestions);
+            $out .= $this->renderDeleteGoalForm((int) ($goal['id'] ?? 0));
+            $out .= '</details>';
+        }
+    }
+    $out .= '</div>';
+    return $out;
+}
+
+protected function renderGoalDatalists(array $suggestions) {
+    $map = [
+        'groups' => 'pwna-goal-groups',
+        'names' => 'pwna-goal-names',
+        'labels' => 'pwna-goal-labels',
+        'targets' => 'pwna-goal-targets',
+        'paths' => 'pwna-goal-paths',
+    ];
+    $out = '';
+    foreach($map as $key => $id) {
+        $out .= '<datalist id="' . $this->sanitizer->entities($id) . '">';
+        foreach((array) ($suggestions[$key] ?? []) as $value => $label) {
+            $out .= '<option value="' . $this->sanitizer->entities((string) $value) . '">' . $this->sanitizer->entities((string) $label) . '</option>';
+        }
+        $out .= '</datalist>';
+    }
+    return $out;
+}
+
+protected function renderGoalForm(array $goal, array $suggestions = []) {
+    $csrfName = $this->session->CSRF->getTokenName();
+    $csrfValue = $this->session->CSRF->getTokenValue();
+    $id = (int) ($goal['id'] ?? 0);
+    $type = (string) ($goal['goal_type'] ?? 'event');
+    if(!in_array($type, ['event', 'page'], true)) $type = 'event';
+    $base = (string) ($goal['conversion_base'] ?? 'sessions');
+    if(!in_array($base, ['sessions', 'uniques'], true)) $base = 'sessions';
+    $active = array_key_exists('active', $goal) ? !empty($goal['active']) : true;
+    $out = '<form method="post" class="pwna-goal-form" data-pwna-goal-form="1">';
+    $out .= '<input type="hidden" name="' . $this->sanitizer->entities($csrfName) . '" value="' . $this->sanitizer->entities($csrfValue) . '">';
+    $out .= '<input type="hidden" name="pwna_action" value="save_goal">';
+    $out .= '<input type="hidden" name="id" value="' . $id . '">';
+
+    $out .= '<div class="pwna-goal-section"><h3>1. Goal basics</h3><div class="pwna-gen-grid">';
+    $out .= $this->renderGoalPresetSelect();
+    $out .= $this->renderGoalInput('title', 'Goal name', (string) ($goal['title'] ?? ''), 'Contact form submitted', 'A readable name used in the Goals table and conversion reports.');
+    $out .= '<label class="pwna-field"><span>Goal type</span><select name="goal_type" data-pwna-goal-type><option value="event"' . ($type === 'event' ? ' selected' : '') . '>Event based</option><option value="page"' . ($type === 'page' ? ' selected' : '') . '>Page/path based</option></select><small class="pwna-field-help">Event goals match tracked actions. Page/path goals match visits to confirmation or thank-you pages.</small></label>';
+    $out .= '<label class="pwna-field"><span>Conversion base</span><select name="conversion_base"><option value="sessions"' . ($base === 'sessions' ? ' selected' : '') . '>Sessions</option><option value="uniques"' . ($base === 'uniques' ? ' selected' : '') . '>Unique visitors</option></select><small class="pwna-field-help">Choose what the conversion rate is measured against. Sessions is usually best for leads and forms.</small></label>';
+    $out .= '<label class="pwna-field pwna-checkbox-field"><span>Active</span><label><input type="checkbox" name="active" value="1"' . ($active ? ' checked' : '') . '> Include this goal in reports</label><small class="pwna-field-help">Turn this off to keep the goal definition but exclude it from cards, trend charts and conversion rates.</small></label>';
+    $out .= '</div></div>';
+
+    $out .= '<div class="pwna-goal-section" data-pwna-goal-event-section><h3>2. Event rule</h3>';
+    $out .= '<p class="pwna-note">Use this when the conversion is a tracked action, for example a form submit, download, phone click or custom CTA click.</p>';
+    $out .= '<div class="pwna-gen-grid">';
+    $out .= $this->renderRecentEventSelect($suggestions);
+    $out .= $this->renderGoalInput('event_group', 'Event group', (string) ($goal['event_group'] ?? ''), 'form, lead, download, contact', 'Exact match. Pick from recent values or type your own group.', 'pwna-goal-groups');
+    $out .= $this->renderGoalInput('event_name', 'Event name', (string) ($goal['event_name'] ?? ''), 'form_submit, cta_contact', 'Exact match. For custom CTA buttons this is the data-pwna-event value.', 'pwna-goal-names');
+    $out .= $this->renderGoalInput('event_label_contains', 'Event label contains', (string) ($goal['event_label_contains'] ?? ''), 'Contact, Demo, Booking', 'Optional. Use this to narrow the goal to a specific button/form label.', 'pwna-goal-labels');
+    $out .= $this->renderGoalInput('event_target_contains', 'Event target contains', (string) ($goal['event_target_contains'] ?? ''), '/contact/ or file name', 'Optional. Use this to narrow the goal to a specific link target, file, phone number or URL.', 'pwna-goal-targets');
+    $out .= '</div></div>';
+
+    $out .= '<div class="pwna-goal-section" data-pwna-goal-page-section><h3>2. Page/path rule</h3>';
+    $out .= '<p class="pwna-note">Use this when the conversion happens after a visitor reaches a confirmation page, for example after a form, checkout or booking flow.</p>';
+    $out .= '<div class="pwna-gen-grid">';
+    $out .= $this->renderRecentPageSelect($suggestions);
+    $out .= $this->renderGoalInput('path_contains', 'Page/path contains', (string) ($goal['path_contains'] ?? ''), '/thank-you/', 'Contains match. Pick a recent path or type only the stable part of the URL, for example /thank-you/ instead of a full URL.', 'pwna-goal-paths');
+    $out .= '</div></div>';
+
+    $out .= '<div class="pwna-helper-actions"><button class="ui-button" type="submit">' . ($id > 0 ? 'Save goal' : 'Create goal') . '</button></div>';
+    $out .= '</form>';
+    return $out;
+}
+
+protected function renderGoalPresetSelect() {
+    $out = '<label class="pwna-field"><span>Quick setup</span><select data-pwna-goal-preset><option value="">Choose a ready-made goal...</option>';
+    $out .= '<option value="contact_form">Contact form submitted</option>';
+    $out .= '<option value="lead_cta">Lead / CTA button clicked</option>';
+    $out .= '<option value="download">File downloaded</option>';
+    $out .= '<option value="contact_click">Phone or email clicked</option>';
+    $out .= '<option value="thank_you">Thank-you page reached</option>';
+    $out .= '</select><small class="pwna-field-help">Optional helper. It fills the main fields with common goal patterns.</small></label>';
+    return $out;
+}
+
+protected function renderRecentEventSelect(array $suggestions) {
+    $events = (array) ($suggestions['events'] ?? []);
+    $out = '<label class="pwna-field pwna-span-all"><span>Choose recent tracked event</span><select data-pwna-goal-event-select><option value="">Select from recent Engagement data...</option>';
+    if($events) {
+        $i = 0;
+        foreach($events as $event) {
+            $out .= '<option value="' . (++$i) . '" data-event-group="' . $this->sanitizer->entities((string) ($event['event_group'] ?? '')) . '" data-event-name="' . $this->sanitizer->entities((string) ($event['event_name'] ?? '')) . '" data-event-label="' . $this->sanitizer->entities((string) ($event['event_label'] ?? '')) . '" data-event-target="' . $this->sanitizer->entities((string) ($event['event_target'] ?? '')) . '">' . $this->sanitizer->entities((string) ($event['title'] ?? 'Tracked event')) . '</option>';
+        }
+    } else {
+        $out .= '<option value="" disabled>No tracked events found in the selected range yet</option>';
+    }
+    $out .= '</select><small class="pwna-field-help">This fills event group, name, label and target from real tracked actions. You can edit the values after selecting.</small></label>';
+    return $out;
+}
+
+protected function renderRecentPageSelect(array $suggestions) {
+    $pages = (array) ($suggestions['pages'] ?? []);
+    $out = '<label class="pwna-field pwna-span-all"><span>Choose recent page/path</span><select data-pwna-goal-page-select><option value="">Select from recent traffic...</option>';
+    if($pages) {
+        foreach($pages as $page) {
+            $path = (string) ($page['path'] ?? '');
+            $label = (string) ($page['label'] ?? $path);
+            $out .= '<option value="' . $this->sanitizer->entities($path) . '" data-path="' . $this->sanitizer->entities($path) . '">' . $this->sanitizer->entities($label) . '</option>';
+        }
+    } else {
+        $out .= '<option value="" disabled>No recent page paths found in the selected range yet</option>';
+    }
+    $out .= '</select><small class="pwna-field-help">Useful for confirmation pages. The path field below remains editable for custom contains matching.</small></label>';
+    return $out;
+}
+
+protected function renderGoalInput($name, $label, $value, $placeholder = '', $help = '', $listId = '') {
+    $list = $listId !== '' ? ' list="' . $this->sanitizer->entities($listId) . '"' : '';
+    $out = '<label class="pwna-field"><span>' . $this->sanitizer->entities($label) . '</span><input type="text" name="' . $this->sanitizer->entities($name) . '" value="' . $this->sanitizer->entities((string) $value) . '" placeholder="' . $this->sanitizer->entities((string) $placeholder) . '"' . $list . '>';
+    if($help !== '') $out .= '<small class="pwna-field-help">' . $this->sanitizer->entities($help) . '</small>';
+    $out .= '</label>';
+    return $out;
+}
+
+protected function renderDeleteGoalForm($goalId) {
+    if($goalId < 1) return '';
+    $csrfName = $this->session->CSRF->getTokenName();
+    $csrfValue = $this->session->CSRF->getTokenValue();
+    $out = '<form method="post" class="pwna-delete-goal-form" onsubmit="return confirm(\'Delete this goal? Existing analytics data is not deleted.\');">';
+    $out .= '<input type="hidden" name="' . $this->sanitizer->entities($csrfName) . '" value="' . $this->sanitizer->entities($csrfValue) . '">';
+    $out .= '<input type="hidden" name="pwna_action" value="delete_goal">';
+    $out .= '<input type="hidden" name="goal_id" value="' . (int) $goalId . '">';
+    $out .= '<button class="ui-button pwna-danger-button" type="submit">Delete goal</button>';
+    $out .= '</form>';
     return $out;
 }
 
@@ -1197,6 +1575,10 @@ protected function renderHelpIcon($text, $label = 'Help', $extraClass = '') {
                 'label' => 'Purge old raw hits',
                 'help' => 'Deletes older raw page-hit records according to the module retention rules. Aggregated summary data stays available.',
             ],
+            'purge_events' => [
+                'label' => 'Purge old raw events',
+                'help' => 'Deletes older raw engagement events according to the module retention rules. Event and goal aggregates stay available.',
+            ],
             'purge_realtime' => [
                 'label' => 'Purge old realtime sessions',
                 'help' => 'Removes stale current-visitor rows that are older than the realtime visitor window.',
@@ -1216,7 +1598,7 @@ protected function renderHelpIcon($text, $label = 'Help', $extraClass = '') {
         $out .= '</div>';
         $out .= '<div class="pwna-danger-zone">';
         $out .= '<h3>Danger zone</h3>';
-        $out .= '<p class="pwna-note">Reset analytics data permanently deletes all tracked page views, sessions, daily aggregates and engagement events. Module settings and dashboard pages stay intact.</p>';
+        $out .= '<p class="pwna-note">Reset analytics data permanently deletes all tracked page views, sessions, daily aggregates, goal aggregates and engagement events. Goal definitions stay intact. Module settings and dashboard pages stay intact.</p>';
         $out .= "<form method=\"post\" onsubmit=\"return confirm('Are you sure you want to reset all analytics data? This cannot be undone.');\">";
         $out .= '<input type="hidden" name="' . $this->sanitizer->entities($csrfName) . '" value="' . $this->sanitizer->entities($csrfValue) . '">';
         $out .= '<input type="hidden" name="pwna_action" value="reset_analytics_data">';
@@ -1850,11 +2232,97 @@ protected function renderEventCards(array $all, array $forms, array $downloads, 
     window.addEventListener('scroll', place, {passive:true});
     window.addEventListener('resize', place);
   }
+  function triggerChange(el){
+    if(!el) return;
+    if(typeof Event === 'function') el.dispatchEvent(new Event('change', {bubbles:true}));
+    else {
+      var ev = document.createEvent('Event');
+      ev.initEvent('change', true, true);
+      el.dispatchEvent(ev);
+    }
+  }
+  function goalField(form, name){
+    return form ? form.querySelector('[name="' + name + '"]') : null;
+  }
+  function setGoalField(form, name, value){
+    var el = goalField(form, name);
+    if(el) el.value = value == null ? '' : String(value);
+  }
+  function setGoalType(form, type){
+    var el = form ? form.querySelector('[data-pwna-goal-type]') : null;
+    if(el){ el.value = type === 'page' ? 'page' : 'event'; triggerChange(el); }
+  }
+  function applyGoalSectionVisibility(form){
+    if(!form) return;
+    var typeEl = form.querySelector('[data-pwna-goal-type]');
+    var type = typeEl && typeEl.value === 'page' ? 'page' : 'event';
+    var eventSection = form.querySelector('[data-pwna-goal-event-section]');
+    var pageSection = form.querySelector('[data-pwna-goal-page-section]');
+    if(eventSection) eventSection.hidden = type !== 'event';
+    if(pageSection) pageSection.hidden = type !== 'page';
+  }
+  function applyGoalPreset(form, preset){
+    if(!form || !preset) return;
+    var data = {
+      contact_form: {title:'Contact form submitted', type:'event', group:'form', name:'form_submit', label:'', target:'', path:'', base:'sessions'},
+      lead_cta: {title:'Lead / CTA button clicked', type:'event', group:'lead', name:'cta_contact', label:'', target:'', path:'', base:'sessions'},
+      download: {title:'File downloaded', type:'event', group:'download', name:'download_file', label:'', target:'', path:'', base:'sessions'},
+      contact_click: {title:'Phone or email clicked', type:'event', group:'contact', name:'', label:'', target:'', path:'', base:'sessions'},
+      thank_you: {title:'Thank-you page reached', type:'page', group:'', name:'', label:'', target:'', path:'/thank-you/', base:'sessions'}
+    }[preset];
+    if(!data) return;
+    setGoalType(form, data.type);
+    setGoalField(form, 'title', data.title);
+    setGoalField(form, 'event_group', data.group);
+    setGoalField(form, 'event_name', data.name);
+    setGoalField(form, 'event_label_contains', data.label);
+    setGoalField(form, 'event_target_contains', data.target);
+    setGoalField(form, 'path_contains', data.path);
+    setGoalField(form, 'conversion_base', data.base);
+  }
+  function initGoalForms(){
+    document.querySelectorAll('[data-pwna-goal-form="1"]').forEach(function(form){
+      if(form.dataset.pwnaGoalInit === '1') return;
+      form.dataset.pwnaGoalInit = '1';
+      var typeEl = form.querySelector('[data-pwna-goal-type]');
+      if(typeEl) typeEl.addEventListener('change', function(){ applyGoalSectionVisibility(form); });
+      var preset = form.querySelector('[data-pwna-goal-preset]');
+      if(preset) preset.addEventListener('change', function(){ applyGoalPreset(form, preset.value); });
+      var eventSelect = form.querySelector('[data-pwna-goal-event-select]');
+      if(eventSelect) eventSelect.addEventListener('change', function(){
+        var opt = eventSelect.options[eventSelect.selectedIndex];
+        if(!opt || !eventSelect.value) return;
+        setGoalType(form, 'event');
+        var group = opt.getAttribute('data-event-group') || '';
+        var name = opt.getAttribute('data-event-name') || '';
+        var label = opt.getAttribute('data-event-label') || '';
+        var target = opt.getAttribute('data-event-target') || '';
+        var titleEl = goalField(form, 'title');
+        if(titleEl && !titleEl.value) setGoalField(form, 'title', label || name || 'Tracked event goal');
+        setGoalField(form, 'event_group', group);
+        setGoalField(form, 'event_name', name);
+        setGoalField(form, 'event_label_contains', label);
+        setGoalField(form, 'event_target_contains', target);
+      });
+      var pageSelect = form.querySelector('[data-pwna-goal-page-select]');
+      if(pageSelect) pageSelect.addEventListener('change', function(){
+        var opt = pageSelect.options[pageSelect.selectedIndex];
+        var path = opt ? (opt.getAttribute('data-path') || pageSelect.value || '') : '';
+        if(!path) return;
+        setGoalType(form, 'page');
+        var titleEl = goalField(form, 'title');
+        if(titleEl && !titleEl.value) setGoalField(form, 'title', 'Page reached: ' + path);
+        setGoalField(form, 'path_contains', path);
+      });
+      applyGoalSectionVisibility(form);
+    });
+  }
   function init(){
     initCopyButtons();
     initGenerators();
     initEngagementSwitch();
     initAdaptiveTooltips();
+    initGoalForms();
   }
   if(document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', init);

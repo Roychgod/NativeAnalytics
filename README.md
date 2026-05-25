@@ -1,10 +1,10 @@
-NativeAnalytics 1.0.21
+NativeAnalytics 1.0.22
 
 # NativeAnalytics
 
 Native first-party analytics module for ProcessWire CMS. It tracks traffic and engagement directly inside ProcessWire, without Google Analytics or external APIs.
 
-## Features in v1.0.21
+## Features in v1.0.22
 
 - Page views, unique visitors and sessions
 - Current visitors based on active sessions
@@ -169,3 +169,11 @@ This release is renamed to **NativeAnalytics** and is intended as a fresh instal
 - Fixed the Goal trend chart so it plots goal completions correctly, while still showing unique visitors and sessions in the tooltip.
 - Fixed chart x-axis labels so long date/time labels remain fully visible on the right edge of all SVG charts.
 - Updated module version metadata to `1.0.21` / integer `1021` for both NativeAnalytics and the dashboard process module.
+
+## 1.0.22 notes
+
+- Added CSP nonce support for NativeAnalytics frontend and admin script tags.
+- NativeAnalytics now reuses an existing nonce from `$config->cspNonce`, `$config->cspNonce()` or the current `Content-Security-Policy` / `Content-Security-Policy-Report-Only` header when available.
+- Sites without a CSP nonce continue to render normal script tags, so this change is backwards compatible.
+- Hardened admin inline script rendering so JavaScript variables such as jQuery `$root`, `$links` and `$link` are not interpreted as PHP variables before output.
+- Updated module version metadata to `1.0.22` / integer `1022` for both NativeAnalytics and the dashboard process module.

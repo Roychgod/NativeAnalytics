@@ -2,7 +2,7 @@
 
 class NativeAnalytics extends WireData implements Module, ConfigurableModule {
 
-    const VERSION = '1.0.21';
+    const VERSION = '1.0.22';
     const HITS_TABLE = 'pwna_hits';
     const DAILY_TABLE = 'pwna_daily';
     const SESSIONS_TABLE = 'pwna_sessions';
@@ -49,7 +49,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         return [
             'title' => 'NativeAnalytics',
             'summary' => 'Native first-party analytics dashboard for ProcessWire with traffic, compare, exports, event tracking and goals.',
-            'version' => 1021,
+            'version' => 1022,
             'author' => 'Pyxios - Roych (www.pyxios.com)',
             'href' => 'https://processwire.com/talk/topic/31808-native-analytics-%E2%80%94-a-native-analytics-module-for-processwire/',
             'repo' => 'https://github.com/Roychgod/NativeAnalytics',
@@ -129,6 +129,65 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
 
     public function getRealtimeEndpointUrl() {
         return $this->wire('config')->urls->root . 'pwna-realtime/';
+    }
+
+
+    /**
+     * Return a CSP nonce for script tags when the site defines one.
+     *
+     * NativeAnalytics does not create or manage the CSP header. This helper only
+     * reuses an existing nonce from a custom $config->cspNonce value/method or
+     * from the already prepared Content-Security-Policy header. If no nonce is
+     * found, script tags are rendered normally.
+     */
+    public function getCspNonce() {
+        $nonce = '';
+        $config = $this->wire('config');
+
+        try {
+            if($config && method_exists($config, 'cspNonce')) {
+                $value = $config->cspNonce();
+                if(is_string($value) && $value !== '') $nonce = $value;
+            }
+        } catch(\Throwable $e) {
+            $nonce = '';
+        }
+
+        if($nonce === '' && $config) {
+            try {
+                $value = $config->get('cspNonce');
+                if(is_string($value) && $value !== '') $nonce = $value;
+                elseif($value === null) {
+                    $value = $config->cspNonce;
+                    if(is_string($value) && $value !== '') $nonce = $value;
+                }
+            } catch(\Throwable $e) {
+                $nonce = '';
+            }
+        }
+
+        if($nonce === '') {
+            $headers = function_exists('headers_list') ? headers_list() : [];
+            if($headers) {
+                $headerText = implode("\n", $headers);
+                if(preg_match('#^Content-Security-Policy(?:-Report-Only)?:.*\s(?:script-src|script-src-elem)\s+(?:[^;]+\s)?\'nonce-([A-Za-z0-9+/_=-]+)\'#mi', $headerText, $m)) {
+                    $nonce = (string) $m[1];
+                }
+            }
+        }
+
+        $nonce = trim((string) $nonce);
+        if($nonce === '' || !preg_match('/^[A-Za-z0-9+\/_=-]+$/', $nonce)) return '';
+        return $nonce;
+    }
+
+    /**
+     * Return a ready-to-insert nonce attribute for script tags.
+     */
+    public function getScriptNonceAttribute() {
+        $nonce = $this->getCspNonce();
+        if($nonce === '') return '';
+        return ' nonce="' . $this->wire('sanitizer')->entities($nonce) . '"';
     }
 
     public function install() {
@@ -946,8 +1005,9 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $jsonFlags = JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
         $configJson = json_encode($payload, $jsonFlags);
         if($configJson === false) return;
-        $injected = "\n<script>window.PWNA_CONFIG = " . $configJson . ";</script>\n";
-        $injected .= '<script src="' . $this->wire('sanitizer')->entities($scriptUrl) . '" data-pwna-tracker="1" defer></script>' . "\n";
+        $nonceAttr = $this->getScriptNonceAttribute();
+        $injected = "\n<script" . $nonceAttr . ">window.PWNA_CONFIG = " . $configJson . ";</script>\n";
+        $injected .= '<script' . $nonceAttr . ' src="' . $this->wire('sanitizer')->entities($scriptUrl) . '" data-pwna-tracker="1" defer></script>' . "\n";
 
         if(stripos($html, '</body>') !== false) {
             $event->return = preg_replace('~</body>~i', $injected . '</body>', $html, 1);
@@ -3303,8 +3363,10 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
 
         if(!empty($this->monthlyReportIncludeTopPages)) {
             $html .= $this->renderMonthlyReportTable('Top pages', ['Page', 'Views', 'Uniques', 'Sessions'], $topPages, function($row) {
+                $title = (string) ($row['page_title'] ?? '');
+                $path = (string) ($row['path'] ?? '');
                 return [
-                    $row['page_title'] !== '' ? $row['page_title'] . ' (' . $row['path'] . ')' : $row['path'],
+                    $title !== '' ? $title . ' (' . $path . ')' : $path,
                     (int) ($row['views'] ?? 0),
                     (int) ($row['uniques'] ?? 0),
                     (int) ($row['sessions'] ?? 0),

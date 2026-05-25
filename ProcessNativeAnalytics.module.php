@@ -6,7 +6,7 @@ class ProcessNativeAnalytics extends Process {
         return [
             'title' => 'NativeAnalytics Dashboard',
             'summary' => 'Dashboard for the NativeAnalytics module.',
-            'version' => 1021,
+            'version' => 1022,
             'author' => 'Pyxios - Roych (www.pyxios.com)',
             'permission' => 'nativeanalytics-view',
             'icon' => 'area-chart',
@@ -16,6 +16,59 @@ class ProcessNativeAnalytics extends Process {
                 'title' => 'Analytics',
             ],
         ];
+    }
+
+
+    /**
+     * Return the nonce attribute for inline admin scripts when a CSP nonce exists.
+     */
+    protected function getScriptNonceAttribute() {
+        try {
+            $analytics = $this->wire('modules')->get('NativeAnalytics');
+            if($analytics && method_exists($analytics, 'getScriptNonceAttribute')) {
+                return (string) $analytics->getScriptNonceAttribute();
+            }
+        } catch(\Throwable $e) {
+        }
+
+        $nonce = '';
+        $config = $this->wire('config');
+
+        try {
+            if($config && method_exists($config, 'cspNonce')) {
+                $value = $config->cspNonce();
+                if(is_string($value) && $value !== '') $nonce = $value;
+            }
+        } catch(\Throwable $e) {
+            $nonce = '';
+        }
+
+        if($nonce === '' && $config) {
+            try {
+                $value = $config->get('cspNonce');
+                if(is_string($value) && $value !== '') $nonce = $value;
+                elseif($value === null) {
+                    $value = $config->cspNonce;
+                    if(is_string($value) && $value !== '') $nonce = $value;
+                }
+            } catch(\Throwable $e) {
+                $nonce = '';
+            }
+        }
+
+        if($nonce === '') {
+            $headers = function_exists('headers_list') ? headers_list() : [];
+            if($headers) {
+                $headerText = implode("\n", $headers);
+                if(preg_match('#^Content-Security-Policy(?:-Report-Only)?:.*\s(?:script-src|script-src-elem)\s+(?:[^;]+\s)?\'nonce-([A-Za-z0-9+/_=-]+)\'#mi', $headerText, $m)) {
+                    $nonce = (string) $m[1];
+                }
+            }
+        }
+
+        $nonce = trim((string) $nonce);
+        if($nonce === '' || !preg_match('/^[A-Za-z0-9+\/_=-]+$/', $nonce)) return '';
+        return ' nonce="' . $this->sanitizer->entities($nonce) . '"';
     }
 
     public function uninstall() {
@@ -908,8 +961,9 @@ protected function renderWireTabsScript($activeTab, $engagementView) {
     ];
     $json = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
     if($json === false) $json = '{}';
+    $nonceAttr = $this->getScriptNonceAttribute();
     $script = <<<'HTML'
-<script>
+<script__PWNA_NONCE__>
 (function($){
   if(!$) return;
   function getStore(){
@@ -1040,7 +1094,7 @@ protected function renderWireTabsScript($activeTab, $engagementView) {
 })(window.jQuery);
 </script>
 HTML;
-    return str_replace('__PWNA_JSON__', $json, $script);
+    return str_replace(['__PWNA_NONCE__', '__PWNA_JSON__'], [$nonceAttr, $json], $script);
 }
 
 
@@ -1674,7 +1728,7 @@ protected function renderHelpIcon($text, $label = 'Help', $extraClass = '') {
     }
 
 protected function renderChartTooltipScript() {
-    return '<script>(function(){function init(){document.querySelectorAll(".pwna-chart-wrap").forEach(function(wrap){var tip=wrap.querySelector(".pwna-chart-tooltip");if(!tip||wrap.dataset.pwnaTipInit==="1")return;wrap.dataset.pwnaTipInit="1";var dayEl=tip.querySelector(".pwna-chart-tooltip-day");var timeEl=tip.querySelector(".pwna-chart-tooltip-time");var viewsEl=tip.querySelector("[data-pwna-tip=views]");var uniquesEl=tip.querySelector("[data-pwna-tip=uniques]");var sessionsEl=tip.querySelector("[data-pwna-tip=sessions]");var compareWrap=tip.querySelector(".pwna-chart-tooltip-compare");var compareDay=tip.querySelector("[data-pwna-tip=compare-day]");var compareViews=tip.querySelector("[data-pwna-tip=compare-views]");var compareUniques=tip.querySelector("[data-pwna-tip=compare-uniques]");var compareSessions=tip.querySelector("[data-pwna-tip=compare-sessions]");function place(ev){var rect=wrap.getBoundingClientRect();var x=(ev.clientX-rect.left)+14;var y=(ev.clientY-rect.top)-12;var maxX=Math.max(8, rect.width-tip.offsetWidth-8);var maxY=Math.max(8, rect.height-tip.offsetHeight-8);tip.style.left=Math.max(8, Math.min(x, maxX))+"px";tip.style.top=Math.max(8, Math.min(y, maxY))+"px";}function activate(point,ev){wrap.querySelectorAll(".pwna-point.is-active").forEach(function(el){el.classList.remove("is-active");});point.classList.add("is-active");dayEl.textContent=point.getAttribute("data-label")||"";var timeText=point.getAttribute("data-time")||"";timeEl.textContent=timeText;timeEl.hidden=!timeText;viewsEl.textContent=point.getAttribute("data-views")||"0";uniquesEl.textContent=point.getAttribute("data-uniques")||"0";sessionsEl.textContent=point.getAttribute("data-sessions")||"0";var hasCompare=point.hasAttribute("data-compare-label");if(compareWrap){compareWrap.hidden=!hasCompare;if(hasCompare){compareDay.textContent=point.getAttribute("data-compare-label")||"";compareViews.textContent=point.getAttribute("data-compare-views")||"0";compareUniques.textContent=point.getAttribute("data-compare-uniques")||"0";compareSessions.textContent=point.getAttribute("data-compare-sessions")||"0";}}tip.hidden=false;place(ev);}wrap.querySelectorAll(".pwna-point").forEach(function(point){point.addEventListener("mouseenter", function(ev){activate(point,ev);});point.addEventListener("mousemove", function(ev){place(ev);});});wrap.addEventListener("mouseleave", function(){wrap.querySelectorAll(".pwna-point.is-active").forEach(function(el){el.classList.remove("is-active");});tip.hidden=true;});});}if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded", init);}else{init();}})();</script>';
+    return '<script' . $this->getScriptNonceAttribute() . '>(function(){function init(){document.querySelectorAll(".pwna-chart-wrap").forEach(function(wrap){var tip=wrap.querySelector(".pwna-chart-tooltip");if(!tip||wrap.dataset.pwnaTipInit==="1")return;wrap.dataset.pwnaTipInit="1";var dayEl=tip.querySelector(".pwna-chart-tooltip-day");var timeEl=tip.querySelector(".pwna-chart-tooltip-time");var viewsEl=tip.querySelector("[data-pwna-tip=views]");var uniquesEl=tip.querySelector("[data-pwna-tip=uniques]");var sessionsEl=tip.querySelector("[data-pwna-tip=sessions]");var compareWrap=tip.querySelector(".pwna-chart-tooltip-compare");var compareDay=tip.querySelector("[data-pwna-tip=compare-day]");var compareViews=tip.querySelector("[data-pwna-tip=compare-views]");var compareUniques=tip.querySelector("[data-pwna-tip=compare-uniques]");var compareSessions=tip.querySelector("[data-pwna-tip=compare-sessions]");function place(ev){var rect=wrap.getBoundingClientRect();var x=(ev.clientX-rect.left)+14;var y=(ev.clientY-rect.top)-12;var maxX=Math.max(8, rect.width-tip.offsetWidth-8);var maxY=Math.max(8, rect.height-tip.offsetHeight-8);tip.style.left=Math.max(8, Math.min(x, maxX))+"px";tip.style.top=Math.max(8, Math.min(y, maxY))+"px";}function activate(point,ev){wrap.querySelectorAll(".pwna-point.is-active").forEach(function(el){el.classList.remove("is-active");});point.classList.add("is-active");dayEl.textContent=point.getAttribute("data-label")||"";var timeText=point.getAttribute("data-time")||"";timeEl.textContent=timeText;timeEl.hidden=!timeText;viewsEl.textContent=point.getAttribute("data-views")||"0";uniquesEl.textContent=point.getAttribute("data-uniques")||"0";sessionsEl.textContent=point.getAttribute("data-sessions")||"0";var hasCompare=point.hasAttribute("data-compare-label");if(compareWrap){compareWrap.hidden=!hasCompare;if(hasCompare){compareDay.textContent=point.getAttribute("data-compare-label")||"";compareViews.textContent=point.getAttribute("data-compare-views")||"0";compareUniques.textContent=point.getAttribute("data-compare-uniques")||"0";compareSessions.textContent=point.getAttribute("data-compare-sessions")||"0";}}tip.hidden=false;place(ev);}wrap.querySelectorAll(".pwna-point").forEach(function(point){point.addEventListener("mouseenter", function(ev){activate(point,ev);});point.addEventListener("mousemove", function(ev){place(ev);});});wrap.addEventListener("mouseleave", function(){wrap.querySelectorAll(".pwna-point.is-active").forEach(function(el){el.classList.remove("is-active");});tip.hidden=true;});});}if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded", init);}else{init();}})();</script>';
 }
 
         protected function renderAutoRefreshScript(array $rangeMeta, $minutes, $pageId, $template) {
@@ -1692,10 +1746,11 @@ protected function renderChartTooltipScript() {
         ];
         $json = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
         if($json === false) $json = '{}';
-        return <<<HTML
-<script>
+        $nonceAttr = $this->getScriptNonceAttribute();
+        $script = <<<'HTML'
+<script__PWNA_NONCE__>
 (function(){
-  var cfg = {$json};
+  var cfg = __PWNA_JSON__;
   if(!cfg || !cfg.endpoint || !window.fetch) return;
   function fmt(n, d, suf) {
     var num = Number(n || 0);
@@ -1776,6 +1831,7 @@ protected function renderChartTooltipScript() {
 })();
 </script>
 HTML;
+        return str_replace(['__PWNA_NONCE__', '__PWNA_JSON__'], [$nonceAttr, $json], $script);
     }
 
     protected function mapTopPages(array $rows) {
@@ -1992,8 +2048,9 @@ protected function renderEventCards(array $all, array $forms, array $downloads, 
 
 
     protected function renderHelperToolsScript() {
-        return <<<'HTML'
-<script>
+        $nonceAttr = $this->getScriptNonceAttribute();
+        $script = <<<'HTML'
+<script__PWNA_NONCE__>
 (function(){
   function escAttr(v){
     return String(v == null ? '' : v)
@@ -2332,6 +2389,7 @@ protected function renderEventCards(array $all, array $forms, array $downloads, 
 })();
 </script>
 HTML;
+        return str_replace('__PWNA_NONCE__', $nonceAttr, $script);
     }
 
     protected function buildFilterLabel(array $filters) {

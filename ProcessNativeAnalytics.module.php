@@ -366,7 +366,7 @@ public function ___execute() {
         fputcsv($fp, ['range', $rangeMeta['label']], ',', '"', '\\');
         fputcsv($fp, ['page_id', 'title', 'template', 'path', 'views', 'uniques', 'sessions'], ',', '"', '\\');
         foreach($rows as $row) {
-            fputcsv($fp, [$row['page_id'], $row['page_title'], $row['template'], $row['path'], $row['views'], $row['uniques'], $row['sessions']], ',', '"', '\\');
+            fputcsv($fp, [$row['page_id'], $this->sanitizer->unentities($row['page_title'] ?? ''), $row['template'], $row['path'], $row['views'], $row['uniques'], $row['sessions']], ',', '"', '\\');
         }
         rewind($fp);
         $csv = stream_get_contents($fp);
@@ -419,7 +419,7 @@ protected function buildReportData(NativeAnalytics $analytics) {
     if($template !== '') $filters['template'] = $template;
     $compareMeta = $this->getCompareMeta($analytics, $rangeMeta);
     $report = [
-        'generated_at' => $analytics->formatDisplayDateTime(date('Y-m-d H:i:s')), 
+        'generated_at' => $analytics->formatDisplayDateTime(date('Y-m-d H:i:s')),
         'range_label' => $rangeMeta['label'],
         'filters_label' => $this->buildFilterLabel($filters),
         'compare_meta' => $compareMeta,
@@ -511,11 +511,11 @@ protected function buildReportLines(array $report) {
 
     protected function formatReportRow(array $row, $type, $index) {
         if($type === 'page') {
-            $label = trim(strip_tags((string) (($row['page_title'] ?? '') ?: ($row['path'] ?? ''))));
+            $label = trim(strip_tags($this->sanitizer->unentities(($row['page_title'] ?? '') ?: ($row['path'] ?? ''))));
             return $index . '. ' . $label . ' | ' . (string) ($row['path'] ?? '/') . ' | views ' . (int) ($row['views'] ?? 0) . ', uniques ' . (int) ($row['uniques'] ?? 0) . ', sessions ' . (int) ($row['sessions'] ?? 0);
         }
         if($type === 'session_page') {
-            $label = trim(strip_tags((string) (($row['page_title'] ?? '') ?: ($row['path'] ?? ''))));
+            $label = trim(strip_tags($this->sanitizer->unentities(($row['page_title'] ?? '') ?: ($row['path'] ?? ''))));
             return $index . '. ' . $label . ' | ' . (string) ($row['path'] ?? '/') . ' | sessions ' . (int) ($row['sessions'] ?? 0);
         }
         if($type === 'referrer') {
@@ -589,10 +589,10 @@ endobj
         $pdf .= 'xref' . "
 0 " . (count($objects) + 1) . "
 ";
-        $pdf .= sprintf("%010d %05d f 
+        $pdf .= sprintf("%010d %05d f
 ", 0, 65535);
         for($i = 1; $i <= count($objects); $i++) {
-            $pdf .= sprintf("%010d %05d n 
+            $pdf .= sprintf("%010d %05d n
 ", $offsets[$i], 0);
         }
         $pdf .= 'trailer << /Size ' . (count($objects) + 1) . ' /Root ' . $catalogNum . " 0 R >>
@@ -1252,7 +1252,7 @@ protected function buildGoalSuggestions(array $topEvents, array $topEventTargets
     foreach(array_merge($pages, $landing) as $row) {
         $path = (string) ($row['path'] ?? '');
         if($path === '') continue;
-        $label = (string) ($row['page_title'] ?? '');
+        $label = $this->sanitizer->unentities($row['page_title'] ?? '');
         if($label === '') $label = $path;
         else $label .= ' (' . $path . ')';
         $this->addUniqueSuggestion($suggestions['paths'], $path, $label);
@@ -1691,7 +1691,7 @@ protected function renderHelpIcon($text, $label = 'Help', $extraClass = '') {
         foreach($rows as $row) {
             $pageLabel = $this->sanitizer->entities($row['current_path']);
             if(!empty($row['page_title'])) {
-                $pageLabel = '<strong>' . $this->sanitizer->entities(strip_tags((string) $row['page_title'])) . '</strong><br><span class="pwna-muted">' . $this->sanitizer->entities((string) $row['current_path']) . '</span>'; 
+                $pageLabel = '<strong>' . $this->sanitizer->entities1(strip_tags((string) $row['page_title'])) . '</strong><br><span class="pwna-muted">' . $this->sanitizer->entities((string) $row['current_path']) . '</span>';
             }
             if((int) ($row['status_code'] ?? 200) === 404) {
                 $pageLabel .= '<br><span class="pwna-badge">404</span>';
@@ -1839,7 +1839,7 @@ HTML;
         foreach($rows as $row) {
             $pageLabel = $this->sanitizer->entities($row['path']);
             if(!empty($row['page_title'])) {
-                $pageLabel = '<strong>' . $this->sanitizer->entities(strip_tags((string) $row['page_title'])) . '</strong><br><span class="pwna-muted">' . $this->sanitizer->entities((string) $row['path']) . '</span>'; 
+                $pageLabel = '<strong>' . $this->sanitizer->entities1(strip_tags((string) $row['page_title'])) . '</strong><br><span class="pwna-muted">' . $this->sanitizer->entities((string) $row['path']) . '</span>';
             }
             $mapped[] = [$pageLabel, number_format((int) $row['views']), number_format((int) $row['uniques']), number_format((int) $row['sessions'])];
         }
@@ -1851,7 +1851,7 @@ HTML;
         foreach($rows as $row) {
             $pageLabel = $this->sanitizer->entities($row['path']);
             if(!empty($row['page_title'])) {
-                $pageLabel = '<strong>' . $this->sanitizer->entities(strip_tags((string) $row['page_title'])) . '</strong><br><span class="pwna-muted">' . $this->sanitizer->entities((string) $row['path']) . '</span>'; 
+                $pageLabel = '<strong>' . $this->sanitizer->entities1(strip_tags((string) $row['page_title'])) . '</strong><br><span class="pwna-muted">' . $this->sanitizer->entities((string) $row['path']) . '</span>';
             }
             $mapped[] = [$pageLabel, number_format((int) ($row['sessions'] ?? 0))];
         }

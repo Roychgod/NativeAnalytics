@@ -1862,7 +1862,7 @@ HTML;
         $mapped = [];
         foreach($rows as $row) {
             $mapped[] = [
-                '<span class="pwna-break">' . $this->sanitizer->entities((string) ($row['label'] ?? '—')) . '</span>',
+                '<span class="pwna-break">' . $this->sanitizer->entities1((string) ($row['label'] ?? '—')) . '</span>',
                 number_format((int) ($row['views'] ?? 0)),
                 number_format((int) ($row['uniques'] ?? 0)),
                 number_format((int) ($row['sessions'] ?? 0)),
@@ -2012,10 +2012,10 @@ protected function renderEventCards(array $all, array $forms, array $downloads, 
         $mapped = [];
         foreach($rows as $row) {
             $primary = (string) (($row['event_label'] ?? '') ?: ($row['event_name'] ?? 'event'));
-            $label = '<strong>' . $this->sanitizer->entities($primary) . '</strong>';
+            $label = '<strong>' . $this->sanitizer->entities1($primary) . '</strong>';
             $meta = (string) ($row['event_group'] ?? 'custom');
             if(!empty($row['event_target'])) $meta .= ' · ' . (string) $row['event_target'];
-            $label .= '<br><span class="pwna-muted pwna-break">' . $this->sanitizer->entities($meta) . '</span>';
+            $label .= '<br><span class="pwna-muted pwna-break">' . $this->sanitizer->entities1($meta) . '</span>';
             $mapped[] = [$label, number_format((int) ($row['events'] ?? 0)), number_format((int) ($row['uniques'] ?? 0)), number_format((int) ($row['sessions'] ?? 0))];
         }
         return $mapped;
@@ -2025,8 +2025,8 @@ protected function renderEventCards(array $all, array $forms, array $downloads, 
         $mapped = [];
         foreach($rows as $row) {
             $primary = (string) (($row['event_label'] ?? '') ?: ($row['event_name'] ?? 'event'));
-            $label = '<strong>' . $this->sanitizer->entities($primary) . '</strong>';
-            if(!empty($row['event_target'])) $label .= '<br><span class="pwna-muted pwna-break">' . $this->sanitizer->entities((string) $row['event_target']) . '</span>';
+            $label = '<strong>' . $this->sanitizer->entities1($primary) . '</strong>';
+            if(!empty($row['event_target'])) $label .= '<br><span class="pwna-muted pwna-break">' . $this->sanitizer->entities1((string) $row['event_target']) . '</span>';
             $mapped[] = [$label, number_format((int) ($row['events'] ?? 0)), number_format((int) ($row['sessions'] ?? 0))];
         }
         return $mapped;
@@ -2036,8 +2036,8 @@ protected function renderEventCards(array $all, array $forms, array $downloads, 
         $mapped = [];
         foreach($rows as $row) {
             $mapped[] = [
-                '<span class="pwna-break">' . $this->sanitizer->entities((string) ($row['event_target'] ?? '—')) . '</span>',
-                $this->sanitizer->entities((string) ($row['event_group'] ?? 'custom')),
+                '<span class="pwna-break">' . $this->sanitizer->entities1((string) ($row['event_target'] ?? '—')) . '</span>',
+                $this->sanitizer->entities1((string) ($row['event_group'] ?? 'custom')),
                 number_format((int) ($row['events'] ?? 0)),
                 number_format((int) ($row['sessions'] ?? 0)),
             ];

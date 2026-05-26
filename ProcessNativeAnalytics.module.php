@@ -6,7 +6,7 @@ class ProcessNativeAnalytics extends Process {
         return [
             'title' => 'NativeAnalytics Dashboard',
             'summary' => 'Dashboard for the NativeAnalytics module.',
-            'version' => 1022,
+            'version' => 1023,
             'author' => 'Pyxios - Roych (www.pyxios.com)',
             'permission' => 'nativeanalytics-view',
             'icon' => 'area-chart',
@@ -251,6 +251,7 @@ public function ___execute() {
 
     $out = '';
     $out .= $this->renderInlineCssFallback();
+    $out .= '<div class="pwna-app">';
     $out .= $this->renderBrandHeader($analytics);
     $engagementView = $this->getEngagementView();
 
@@ -348,6 +349,7 @@ public function ___execute() {
     $out .= $this->renderHelperToolsScript();
     $out .= $this->renderAutoRefreshScript($rangeMeta, (int) $analytics->realtimeWindowMinutes, $pageId, $template);
     if($wireTabs) $out .= $this->renderWireTabsScript($activeTab, $engagementView);
+    $out .= '</div>';
     return $out;
 }
 

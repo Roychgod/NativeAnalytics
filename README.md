@@ -1,10 +1,10 @@
-NativeAnalytics 1.0.22
+NativeAnalytics 1.0.23
 
 # NativeAnalytics
 
 Native first-party analytics module for ProcessWire CMS. It tracks traffic and engagement directly inside ProcessWire, without Google Analytics or external APIs.
 
-## Features in v1.0.22
+## Features in v1.0.23
 
 - Page views, unique visitors and sessions
 - Current visitors based on active sessions
@@ -177,3 +177,13 @@ This release is renamed to **NativeAnalytics** and is intended as a fresh instal
 - Sites without a CSP nonce continue to render normal script tags, so this change is backwards compatible.
 - Hardened admin inline script rendering so JavaScript variables such as jQuery `$root`, `$links` and `$link` are not interpreted as PHP variables before output.
 - Updated module version metadata to `1.0.22` / integer `1022` for both NativeAnalytics and the dashboard process module.
+
+## 1.0.23 notes
+
+- Theme-adaptive dashboard styling: the admin UI now natively follows the active ProcessWire admin theme via Konkat `--pw-*` CSS custom properties.
+- Automatic light/dark mode support — panels, tables, charts, filters, tooltips, sub-tabs and helper popups all adapt to the active color scheme.
+- Status colors (Danger zone, success buttons, deltas) now use a dedicated `light-dark()` palette with proper contrast in both modes.
+- Fixed solid-color buttons (delete, quick-link) so their label text remains readable on dark backgrounds.
+- Added `.pwna-app` wrapper around the dashboard output for cleaner CSS scoping.
+- Refactored ~175 hardcoded color values in `admin.css` to CSS custom properties.
+- Updated module version metadata to `1.0.23` / integer `1023` for both NativeAnalytics and the dashboard process module.

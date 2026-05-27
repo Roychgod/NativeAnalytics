@@ -2,7 +2,7 @@
 
 class NativeAnalytics extends WireData implements Module, ConfigurableModule {
 
-    const VERSION = '1.0.23';
+    const VERSION = '1.0.24';
     const HITS_TABLE = 'pwna_hits';
     const DAILY_TABLE = 'pwna_daily';
     const SESSIONS_TABLE = 'pwna_sessions';
@@ -23,6 +23,8 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         'ignoreQueryString' => 1,
         'excludeRoles' => ['superuser'],
         'excludePaths' => "/processwire/\n/admin/\n/404/",
+        'suspiciousPathPatterns' => '',
+        'ipBlocklist' => '',
         'searchQueryVars' => 'q,s,search',
         'dashboardDefaultRange' => '30d',
         'displayDateFormat' => 'site_default',
@@ -43,13 +45,14 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         'monthlyReportIncludeReferrers' => 1,
         'monthlyReportIncludeEvents' => 1,
         'monthlyReportLastSentPeriod' => '',
+        'trackingMode' => 'js_first',
     ];
 
     public static function getModuleInfo() {
         return [
             'title' => 'NativeAnalytics',
             'summary' => 'Native first-party analytics dashboard for ProcessWire with traffic, compare, exports, event tracking and goals.',
-            'version' => 1023,
+            'version' => 1024,
             'author' => 'Pyxios - Roych (www.pyxios.com)',
             'href' => 'https://processwire.com/talk/topic/31808-native-analytics-%E2%80%94-a-native-analytics-module-for-processwire/',
             'repo' => 'https://github.com/Roychgod/NativeAnalytics',
@@ -86,13 +89,34 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             return;
         }
 
-        if($this->shouldTrackCurrentRequest()) {
+        $mode = $this->getTrackingMode();
+
+        // Server-side recording: only in 'both' or 'server_only' modes.
+        // In 'js_first' / 'js_only' we rely on the browser tracker, which boots
+        // never fire — eliminating most bot traffic.
+        if(($mode === 'both' || $mode === 'server_only') && $this->shouldTrackCurrentRequest()) {
             $this->trackCurrentRequestServerSide();
         }
 
-        if($this->shouldInjectTrackerCurrentRequest()) {
+        // JS tracker injection: in every mode except 'server_only'.
+        if($mode !== 'server_only' && $this->shouldInjectTrackerCurrentRequest()) {
             $this->addHookAfter('Page::render', $this, 'injectTracker');
         }
+    }
+
+    /**
+     * Returns the configured tracking mode, normalized.
+     *  - 'js_first'     (default): JS tracker is the source of truth; no server-side recording.
+     *                              Best bot resistance. Visitors without JS aren't counted.
+     *  - 'both':                   Legacy behaviour. Server-side records every page render AND
+     *                              JS tracker fires. Higher bot noise.
+     *  - 'server_only':            No JS, server-side only. Maximum coverage, maximum bot noise.
+     *  - 'js_only':                Alias of 'js_first' for clarity in the UI.
+     */
+    public function getTrackingMode() {
+        $m = (string) ($this->trackingMode ?? 'js_first');
+        if(!in_array($m, ['js_first', 'js_only', 'both', 'server_only'], true)) $m = 'js_first';
+        return $m;
     }
 
     protected function applyDefaults() {
@@ -195,6 +219,51 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $this->createPermission('nativeanalytics-view', 'View NativeAnalytics');
         $this->createPermission('nativeanalytics-manage', 'Manage NativeAnalytics');
         $this->installDashboardModule();
+
+        // Fresh installs default to JS-first tracking (best bot resistance).
+        // Persist this explicitly so it survives later upgrades and so the
+        // dashboard reflects the chosen value from the start.
+        try {
+            $modules = $this->wire('modules');
+            $cfg = $modules->getConfig($this);
+            if(!isset($cfg['trackingMode']) || $cfg['trackingMode'] === '') {
+                $cfg['trackingMode'] = 'js_first';
+                $modules->saveConfig($this, $cfg);
+            }
+        } catch(\Throwable $e) {
+            // non-fatal
+        }
+    }
+
+    /**
+     * Upgrade hook called by ProcessWire when the installed version is lower
+     * than the version in module info. We use it to apply lightweight schema
+     * migrations and to preserve legacy behaviour for existing installations.
+     * Existing installs keep the old "server + JS" model unless the user has
+     * already selected another tracking mode. New installs (handled in install())
+     * get the recommended JS-first mode.
+     */
+    public function ___upgrade($fromVersion, $toVersion) {
+        $this->ensureSchema(true);
+
+        if((int) $fromVersion < 1024) {
+            try {
+                $modules = $this->wire('modules');
+                $cfg = $modules->getConfig($this);
+                // Only set if user has never explicitly chosen a mode.
+                if(!isset($cfg['trackingMode']) || $cfg['trackingMode'] === '') {
+                    $cfg['trackingMode'] = 'both';
+                    $modules->saveConfig($this, $cfg);
+                    $this->message(
+                        'NativeAnalytics: kept legacy "Both (server + JS)" tracking mode. '
+                        . 'For dramatically less bot traffic, switch to "JavaScript first" '
+                        . 'in the module settings.'
+                    );
+                }
+            } catch(\Throwable $e) {
+                // non-fatal
+            }
+        }
     }
 
     public function uninstall() {
@@ -498,6 +567,8 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             KEY `goal_id` (`goal_id`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
 
+        $this->ensureLegacySchemaColumns();
+
         $this->ensureIndex(self::HITS_TABLE, 'created_status', '`created_at`, `status_code`');
         $this->ensureIndex(self::HITS_TABLE, 'created_page', '`created_at`, `page_id`');
         $this->ensureIndex(self::HITS_TABLE, 'created_template', '`created_at`, `template`');
@@ -509,6 +580,169 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $this->ensureIndex(self::EVENTS_TABLE, 'created_session', '`created_at`, `session_hash`');
 
         $done = true;
+    }
+
+    /**
+     * Older test releases created some tables before all current columns existed.
+     * CREATE TABLE IF NOT EXISTS is not enough for upgrades, so keep the schema
+     * self-healing by adding missing columns before indexes are created.
+     */
+    protected function ensureLegacySchemaColumns() {
+        $definitions = [
+            self::HITS_TABLE => [
+                'created_date' => "`created_date` DATE NOT NULL DEFAULT '1970-01-01' AFTER `created_at`",
+                'created_hour' => "`created_hour` TINYINT UNSIGNED NOT NULL DEFAULT 0 AFTER `created_date`",
+                'page_id' => "`page_id` INT UNSIGNED NOT NULL DEFAULT 0 AFTER `created_hour`",
+                'page_title' => "`page_title` VARCHAR(255) NOT NULL DEFAULT '' AFTER `page_id`",
+                'template' => "`template` VARCHAR(128) NOT NULL DEFAULT '' AFTER `page_title`",
+                'url' => "`url` VARCHAR(767) NOT NULL DEFAULT '' AFTER `template`",
+                'path' => "`path` VARCHAR(767) NOT NULL DEFAULT '' AFTER `url`",
+                'path_hash' => "`path_hash` CHAR(32) NOT NULL DEFAULT '' AFTER `path`",
+                'referrer_host' => "`referrer_host` VARCHAR(191) NOT NULL DEFAULT '' AFTER `path_hash`",
+                'referrer_url' => "`referrer_url` VARCHAR(767) NOT NULL DEFAULT '' AFTER `referrer_host`",
+                'search_term' => "`search_term` VARCHAR(255) NOT NULL DEFAULT '' AFTER `referrer_url`",
+                'utm_source' => "`utm_source` VARCHAR(191) NOT NULL DEFAULT '' AFTER `search_term`",
+                'utm_medium' => "`utm_medium` VARCHAR(191) NOT NULL DEFAULT '' AFTER `utm_source`",
+                'utm_campaign' => "`utm_campaign` VARCHAR(191) NOT NULL DEFAULT '' AFTER `utm_medium`",
+                'device_type' => "`device_type` VARCHAR(32) NOT NULL DEFAULT '' AFTER `utm_campaign`",
+                'browser' => "`browser` VARCHAR(64) NOT NULL DEFAULT '' AFTER `device_type`",
+                'os' => "`os` VARCHAR(64) NOT NULL DEFAULT '' AFTER `browser`",
+                'user_agent' => "`user_agent` VARCHAR(255) NOT NULL DEFAULT '' AFTER `os`",
+                'visitor_hash' => "`visitor_hash` CHAR(64) NOT NULL DEFAULT '' AFTER `user_agent`",
+                'session_hash' => "`session_hash` CHAR(64) NOT NULL DEFAULT '' AFTER `visitor_hash`",
+                'ip_hash' => "`ip_hash` CHAR(64) NOT NULL DEFAULT '' AFTER `session_hash`",
+                'is_bot' => "`is_bot` TINYINT(1) NOT NULL DEFAULT 0 AFTER `ip_hash`",
+                'status_code' => "`status_code` SMALLINT UNSIGNED NOT NULL DEFAULT 200 AFTER `is_bot`",
+            ],
+            self::DAILY_TABLE => [
+                'page_title' => "`page_title` VARCHAR(255) NOT NULL DEFAULT '' AFTER `page_id`",
+                'template' => "`template` VARCHAR(128) NOT NULL DEFAULT '' AFTER `page_title`",
+                'path' => "`path` VARCHAR(767) NOT NULL DEFAULT '' AFTER `template`",
+                'path_hash' => "`path_hash` CHAR(32) NOT NULL DEFAULT '' AFTER `path`",
+                'views' => "`views` INT UNSIGNED NOT NULL DEFAULT 0 AFTER `path_hash`",
+                'uniques' => "`uniques` INT UNSIGNED NOT NULL DEFAULT 0 AFTER `views`",
+                'sessions' => "`sessions` INT UNSIGNED NOT NULL DEFAULT 0 AFTER `uniques`",
+            ],
+            self::SESSIONS_TABLE => [
+                'visitor_hash' => "`visitor_hash` CHAR(64) NOT NULL DEFAULT '' AFTER `session_hash`",
+                'first_seen_at' => "`first_seen_at` DATETIME NOT NULL DEFAULT '1970-01-01 00:00:00' AFTER `visitor_hash`",
+                'last_seen_at' => "`last_seen_at` DATETIME NOT NULL DEFAULT '1970-01-01 00:00:00' AFTER `first_seen_at`",
+                'page_id' => "`page_id` INT UNSIGNED NOT NULL DEFAULT 0 AFTER `last_seen_at`",
+                'page_title' => "`page_title` VARCHAR(255) NOT NULL DEFAULT '' AFTER `page_id`",
+                'template' => "`template` VARCHAR(128) NOT NULL DEFAULT '' AFTER `page_title`",
+                'current_url' => "`current_url` VARCHAR(767) NOT NULL DEFAULT '' AFTER `template`",
+                'current_path' => "`current_path` VARCHAR(767) NOT NULL DEFAULT '' AFTER `current_url`",
+                'current_path_hash' => "`current_path_hash` CHAR(32) NOT NULL DEFAULT '' AFTER `current_path`",
+                'referrer_host' => "`referrer_host` VARCHAR(191) NOT NULL DEFAULT '' AFTER `current_path_hash`",
+                'referrer_url' => "`referrer_url` VARCHAR(767) NOT NULL DEFAULT '' AFTER `referrer_host`",
+                'device_type' => "`device_type` VARCHAR(32) NOT NULL DEFAULT '' AFTER `referrer_url`",
+                'browser' => "`browser` VARCHAR(64) NOT NULL DEFAULT '' AFTER `device_type`",
+                'os' => "`os` VARCHAR(64) NOT NULL DEFAULT '' AFTER `browser`",
+                'hit_count' => "`hit_count` INT UNSIGNED NOT NULL DEFAULT 1 AFTER `os`",
+                'status_code' => "`status_code` SMALLINT UNSIGNED NOT NULL DEFAULT 200 AFTER `hit_count`",
+            ],
+            self::EVENTS_TABLE => [
+                'created_date' => "`created_date` DATE NOT NULL DEFAULT '1970-01-01' AFTER `created_at`",
+                'created_hour' => "`created_hour` TINYINT UNSIGNED NOT NULL DEFAULT 0 AFTER `created_date`",
+                'page_id' => "`page_id` INT UNSIGNED NOT NULL DEFAULT 0 AFTER `created_hour`",
+                'page_title' => "`page_title` VARCHAR(255) NOT NULL DEFAULT '' AFTER `page_id`",
+                'template' => "`template` VARCHAR(128) NOT NULL DEFAULT '' AFTER `page_title`",
+                'url' => "`url` VARCHAR(767) NOT NULL DEFAULT '' AFTER `template`",
+                'path' => "`path` VARCHAR(767) NOT NULL DEFAULT '' AFTER `url`",
+                'path_hash' => "`path_hash` CHAR(32) NOT NULL DEFAULT '' AFTER `path`",
+                'event_group' => "`event_group` VARCHAR(64) NOT NULL DEFAULT '' AFTER `path_hash`",
+                'event_name' => "`event_name` VARCHAR(128) NOT NULL DEFAULT '' AFTER `event_group`",
+                'event_label' => "`event_label` VARCHAR(255) NOT NULL DEFAULT '' AFTER `event_name`",
+                'event_target' => "`event_target` VARCHAR(767) NOT NULL DEFAULT '' AFTER `event_label`",
+                'extra_json' => "`extra_json` MEDIUMTEXT NULL AFTER `event_target`",
+                'visitor_hash' => "`visitor_hash` CHAR(64) NOT NULL DEFAULT '' AFTER `extra_json`",
+                'session_hash' => "`session_hash` CHAR(64) NOT NULL DEFAULT '' AFTER `visitor_hash`",
+            ],
+            self::EVENT_DAILY_TABLE => [
+                'page_id' => "`page_id` INT UNSIGNED NOT NULL DEFAULT 0 AFTER `day`",
+                'template' => "`template` VARCHAR(128) NOT NULL DEFAULT '' AFTER `page_id`",
+                'event_group' => "`event_group` VARCHAR(64) NOT NULL DEFAULT '' AFTER `template`",
+                'event_name' => "`event_name` VARCHAR(128) NOT NULL DEFAULT '' AFTER `event_group`",
+                'event_label' => "`event_label` VARCHAR(255) NOT NULL DEFAULT '' AFTER `event_name`",
+                'event_label_hash' => "`event_label_hash` CHAR(32) NOT NULL DEFAULT '' AFTER `event_label`",
+                'event_target' => "`event_target` VARCHAR(767) NOT NULL DEFAULT '' AFTER `event_label_hash`",
+                'event_target_hash' => "`event_target_hash` CHAR(32) NOT NULL DEFAULT '' AFTER `event_target`",
+                'events' => "`events` INT UNSIGNED NOT NULL DEFAULT 0 AFTER `event_target_hash`",
+                'uniques' => "`uniques` INT UNSIGNED NOT NULL DEFAULT 0 AFTER `events`",
+                'sessions' => "`sessions` INT UNSIGNED NOT NULL DEFAULT 0 AFTER `uniques`",
+            ],
+            self::GOALS_TABLE => [
+                'title' => "`title` VARCHAR(191) NOT NULL DEFAULT '' AFTER `id`",
+                'goal_type' => "`goal_type` VARCHAR(16) NOT NULL DEFAULT 'event' AFTER `title`",
+                'event_group' => "`event_group` VARCHAR(64) NOT NULL DEFAULT '' AFTER `goal_type`",
+                'event_name' => "`event_name` VARCHAR(128) NOT NULL DEFAULT '' AFTER `event_group`",
+                'event_label_contains' => "`event_label_contains` VARCHAR(191) NOT NULL DEFAULT '' AFTER `event_name`",
+                'event_target_contains' => "`event_target_contains` VARCHAR(191) NOT NULL DEFAULT '' AFTER `event_label_contains`",
+                'path_contains' => "`path_contains` VARCHAR(191) NOT NULL DEFAULT '' AFTER `event_target_contains`",
+                'conversion_base' => "`conversion_base` VARCHAR(16) NOT NULL DEFAULT 'sessions' AFTER `path_contains`",
+                'active' => "`active` TINYINT(1) NOT NULL DEFAULT 1 AFTER `conversion_base`",
+                'created_at' => "`created_at` DATETIME NOT NULL DEFAULT '1970-01-01 00:00:00' AFTER `active`",
+                'updated_at' => "`updated_at` DATETIME NOT NULL DEFAULT '1970-01-01 00:00:00' AFTER `created_at`",
+            ],
+            self::GOAL_DAILY_TABLE => [
+                'conversions' => "`conversions` INT UNSIGNED NOT NULL DEFAULT 0 AFTER `goal_id`",
+                'uniques' => "`uniques` INT UNSIGNED NOT NULL DEFAULT 0 AFTER `conversions`",
+                'sessions' => "`sessions` INT UNSIGNED NOT NULL DEFAULT 0 AFTER `uniques`",
+            ],
+        ];
+
+        foreach($definitions as $table => $columns) {
+            foreach($columns as $column => $definition) {
+                $this->ensureColumn($table, $column, $definition);
+            }
+        }
+
+        $this->backfillLegacySchemaValues();
+    }
+
+    protected function ensureColumn($table, $column, $definition) {
+        $table = preg_replace('/[^a-zA-Z0-9_]+/', '', (string) $table);
+        $column = preg_replace('/[^a-zA-Z0-9_]+/', '', (string) $column);
+        if($table === '' || $column === '' || trim((string) $definition) === '') return;
+        try {
+            $db = $this->wire('database');
+            $stmt = $db->prepare("SHOW COLUMNS FROM `{$table}` LIKE :column");
+            $stmt->execute([':column' => $column]);
+            if($stmt->fetch(\PDO::FETCH_ASSOC)) return;
+
+            try {
+                $db->exec("ALTER TABLE `{$table}` ADD {$definition}");
+            } catch(\Throwable $firstError) {
+                // Some very old test schemas may not have the column referenced
+                // in an AFTER clause. Retry without column positioning.
+                $fallbackDefinition = preg_replace('/\s+AFTER\s+`[^`]+`/i', '', (string) $definition);
+                if($fallbackDefinition !== $definition) {
+                    $db->exec("ALTER TABLE `{$table}` ADD {$fallbackDefinition}");
+                } else {
+                    throw $firstError;
+                }
+            }
+        } catch(\Throwable $e) {
+            $this->wire('log')->save('native-analytics', 'Column ensure failed for ' . $table . '.' . $column . ': ' . $e->getMessage());
+        }
+    }
+
+    protected function backfillLegacySchemaValues() {
+        $db = $this->wire('database');
+        $updates = [
+            "UPDATE `" . self::HITS_TABLE . "` SET `created_date` = DATE(`created_at`) WHERE (`created_date` = '1970-01-01' OR `created_date` IS NULL) AND `created_at` IS NOT NULL",
+            "UPDATE `" . self::HITS_TABLE . "` SET `created_hour` = HOUR(`created_at`) WHERE `created_hour` = 0 AND `created_at` IS NOT NULL",
+            "UPDATE `" . self::HITS_TABLE . "` SET `path_hash` = MD5(`path`) WHERE (`path_hash` = '' OR `path_hash` IS NULL) AND `path` <> ''",
+            "UPDATE `" . self::HITS_TABLE . "` SET `status_code` = 200 WHERE `status_code` IS NULL OR `status_code` < 100",
+            "UPDATE `" . self::SESSIONS_TABLE . "` SET `current_path_hash` = MD5(`current_path`) WHERE (`current_path_hash` = '' OR `current_path_hash` IS NULL) AND `current_path` <> ''",
+            "UPDATE `" . self::SESSIONS_TABLE . "` SET `status_code` = 200 WHERE `status_code` IS NULL OR `status_code` < 100",
+            "UPDATE `" . self::EVENTS_TABLE . "` SET `created_date` = DATE(`created_at`) WHERE (`created_date` = '1970-01-01' OR `created_date` IS NULL) AND `created_at` IS NOT NULL",
+            "UPDATE `" . self::EVENTS_TABLE . "` SET `created_hour` = HOUR(`created_at`) WHERE `created_hour` = 0 AND `created_at` IS NOT NULL",
+            "UPDATE `" . self::EVENTS_TABLE . "` SET `path_hash` = MD5(`path`) WHERE (`path_hash` = '' OR `path_hash` IS NULL) AND `path` <> ''",
+        ];
+        foreach($updates as $sql) {
+            try { $db->exec($sql); } catch(\Throwable $e) {}
+        }
     }
 
     protected function ensureIndex($table, $name, $columns) {
@@ -554,6 +788,8 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             'ignoreQueryString' => 1,
             'excludeRoles' => ['superuser'],
             'excludePaths' => "/processwire/\n/admin/\n/404/",
+            'suspiciousPathPatterns' => '',
+            'ipBlocklist' => '',
             'searchQueryVars' => 'q,s,search',
             'dashboardDefaultRange' => '30d',
             'showPageEditAnalytics' => 1,
@@ -574,6 +810,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             'monthlyReportIncludeReferrers' => 1,
             'monthlyReportIncludeEvents' => 1,
             'monthlyReportLastSentPeriod' => '',
+            'trackingMode' => 'js_first',
         ];
         $data = array_replace($defaults, $data);
         $wrapper = new InputfieldWrapper();
@@ -591,6 +828,175 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $f->checked = !empty($data['eventTrackingEnabled']);
         $f->showIf = 'trackingEnabled=1';
         $f->description = 'Track engagement events such as form submits, downloads, contact links, outbound links and custom CTA events. Requires global tracking to be enabled.';
+        $wrapper->add($f);
+
+        // Bot detection status notice
+        // Three possible states:
+        //   - composer  : site has matomo/device-detector via Composer (gets updates via composer update)
+        //   - bundled   : library is loaded from the version shipped inside this module
+        //   - missing   : neither is available (should not happen in normal installs; bundled lib is shipped)
+        $ddState = 'missing';
+        // Probe Composer first
+        if(!class_exists('DeviceDetector\\DeviceDetector')) {
+            foreach([
+                $wire->config->paths->site . 'vendor/autoload.php',
+                $wire->config->paths->root . 'vendor/autoload.php',
+            ] as $cand) {
+                if(is_file($cand)) {
+                    try { require_once $cand; } catch(\Throwable $e) {}
+                    if(class_exists('DeviceDetector\\DeviceDetector')) { $ddState = 'composer'; break; }
+                }
+            }
+        } else {
+            $ddState = 'composer';
+        }
+        // Fallback to bundled
+        if($ddState === 'missing') {
+            $bundledBoot = __DIR__ . '/lib/bootstrap.php';
+            if(is_file($bundledBoot)) {
+                try { require_once $bundledBoot; } catch(\Throwable $e) {}
+                if(class_exists('DeviceDetector\\DeviceDetector')) $ddState = 'bundled';
+            }
+        }
+
+        $f = $wire->modules->get('InputfieldMarkup');
+        $f->name = 'botDetectionStatus';
+        $f->label = 'Bot detection';
+        $styleBlock = '<style>'
+            . '.pwna-bd-box{margin:0;padding:10px 14px;border-left:3px solid;border-radius:3px;line-height:1.5;}'
+            . '.pwna-bd-box code{padding:2px 6px;border-radius:3px;font-size:.9em;}'
+            . '.pwna-bd-box .pwna-bd-cmd{display:inline-block;margin-top:8px;padding:6px 10px;font-size:.9em;}'
+            // OK (matomo present) — light defaults
+            . '.pwna-bd-ok{background:#e8f5e9;color:#1b3a1d;border-left-color:#2e7d32;}'
+            . '.pwna-bd-ok code{background:rgba(46,125,50,.12);color:#1b3a1d;}'
+            // INFO (bundled) — light defaults
+            . '.pwna-bd-info{background:#e3f2fd;color:#0d3a5e;border-left-color:#1565c0;}'
+            . '.pwna-bd-info code{background:rgba(21,101,192,.12);color:#0d3a5e;}'
+            . '.pwna-bd-info .pwna-bd-cmd{background:#fff;color:#222;border:1px solid #b8d4ec;}'
+            // WARN (missing) — light defaults
+            . '.pwna-bd-warn{background:#fff3e0;color:#3d2a05;border-left-color:#ef6c00;}'
+            . '.pwna-bd-warn code{background:rgba(239,108,0,.12);color:#3d2a05;}'
+            . '.pwna-bd-warn .pwna-bd-cmd{background:#fff;color:#222;border:1px solid #d8c4a4;}'
+            // Dark mode (browsers honoring prefers-color-scheme)
+            . '@media (prefers-color-scheme: dark){'
+            . '  .pwna-bd-ok{background:#1b3a1d;color:#d6f0d8;border-left-color:#66bb6a;}'
+            . '  .pwna-bd-ok code{background:rgba(102,187,106,.18);color:#d6f0d8;}'
+            . '  .pwna-bd-info{background:#0d3a5e;color:#d6e6f5;border-left-color:#42a5f5;}'
+            . '  .pwna-bd-info code{background:rgba(66,165,245,.18);color:#d6e6f5;}'
+            . '  .pwna-bd-info .pwna-bd-cmd{background:#0a2742;color:#d6e6f5;border-color:#1d4d7a;}'
+            . '  .pwna-bd-warn{background:#3d2a05;color:#ffe7c2;border-left-color:#ffa726;}'
+            . '  .pwna-bd-warn code{background:rgba(255,167,38,.18);color:#ffe7c2;}'
+            . '  .pwna-bd-warn .pwna-bd-cmd{background:#2a1f08;color:#ffe7c2;border-color:#5a431a;}'
+            . '}'
+            // PW dark theme classes
+            . 'html.pw-theme-dark .pwna-bd-ok, body.pw-theme-dark .pwna-bd-ok,'
+            . 'html.AdminThemeUikitDark .pwna-bd-ok, body.AdminThemeUikitDark .pwna-bd-ok'
+            . '{background:#1b3a1d;color:#d6f0d8;border-left-color:#66bb6a;}'
+            . 'html.pw-theme-dark .pwna-bd-ok code, body.pw-theme-dark .pwna-bd-ok code,'
+            . 'html.AdminThemeUikitDark .pwna-bd-ok code, body.AdminThemeUikitDark .pwna-bd-ok code'
+            . '{background:rgba(102,187,106,.18);color:#d6f0d8;}'
+            . 'html.pw-theme-dark .pwna-bd-info, body.pw-theme-dark .pwna-bd-info,'
+            . 'html.AdminThemeUikitDark .pwna-bd-info, body.AdminThemeUikitDark .pwna-bd-info'
+            . '{background:#0d3a5e;color:#d6e6f5;border-left-color:#42a5f5;}'
+            . 'html.pw-theme-dark .pwna-bd-info code, body.pw-theme-dark .pwna-bd-info code,'
+            . 'html.AdminThemeUikitDark .pwna-bd-info code, body.AdminThemeUikitDark .pwna-bd-info code'
+            . '{background:rgba(66,165,245,.18);color:#d6e6f5;}'
+            . 'html.pw-theme-dark .pwna-bd-info .pwna-bd-cmd, body.pw-theme-dark .pwna-bd-info .pwna-bd-cmd,'
+            . 'html.AdminThemeUikitDark .pwna-bd-info .pwna-bd-cmd, body.AdminThemeUikitDark .pwna-bd-info .pwna-bd-cmd'
+            . '{background:#0a2742;color:#d6e6f5;border-color:#1d4d7a;}'
+            . 'html.pw-theme-dark .pwna-bd-warn, body.pw-theme-dark .pwna-bd-warn,'
+            . 'html.AdminThemeUikitDark .pwna-bd-warn, body.AdminThemeUikitDark .pwna-bd-warn'
+            . '{background:#3d2a05;color:#ffe7c2;border-left-color:#ffa726;}'
+            . 'html.pw-theme-dark .pwna-bd-warn code, body.pw-theme-dark .pwna-bd-warn code,'
+            . 'html.AdminThemeUikitDark .pwna-bd-warn code, body.AdminThemeUikitDark .pwna-bd-warn code'
+            . '{background:rgba(255,167,38,.18);color:#ffe7c2;}'
+            . 'html.pw-theme-dark .pwna-bd-warn .pwna-bd-cmd, body.pw-theme-dark .pwna-bd-warn .pwna-bd-cmd,'
+            . 'html.AdminThemeUikitDark .pwna-bd-warn .pwna-bd-cmd, body.AdminThemeUikitDark .pwna-bd-warn .pwna-bd-cmd'
+            . '{background:#2a1f08;color:#ffe7c2;border-color:#5a431a;}'
+            . '</style>';
+        // Try to fetch matomo/device-detector version info (current + latest available)
+        // for an inline update notice. Done via a non-static call to the module instance.
+        $versionInfo = [
+            'current' => '',
+            'latest' => '',
+            'latest_url' => '',
+            'update_available' => false,
+            'check_failed' => false,
+        ];
+        try {
+            $moduleInstance = $wire->modules->get('NativeAnalytics');
+            if($moduleInstance && method_exists($moduleInstance, 'getDeviceDetectorVersionInfo')) {
+                $versionInfo = array_merge($versionInfo, $moduleInstance->getDeviceDetectorVersionInfo());
+            }
+        } catch(\Throwable $e) {
+            // ignore
+        }
+
+        $currentVer = $versionInfo['current'];
+        $latestVer = $versionInfo['latest'];
+        $updateAvailable = !empty($versionInfo['update_available']);
+
+        // Build optional "update available" sub-block reused across composer/bundled states.
+        $updateNotice = '';
+        if($updateAvailable && $latestVer !== '') {
+            $latestUrl = $versionInfo['latest_url'] ?: 'https://github.com/matomo-org/device-detector/releases';
+            $latestSafe = htmlspecialchars($latestVer, ENT_QUOTES, 'UTF-8');
+            $currentSafe = htmlspecialchars($currentVer, ENT_QUOTES, 'UTF-8');
+            $urlSafe = htmlspecialchars($latestUrl, ENT_QUOTES, 'UTF-8');
+            $updateNotice = '<br><br><strong>↑ Update available:</strong> '
+                . "your installed version <code>{$currentSafe}</code> is older than the latest release <code>{$latestSafe}</code>. ";
+            if($ddState === 'composer') {
+                $updateNotice .= 'Run <code class="pwna-bd-cmd">composer update matomo/device-detector</code> to upgrade.';
+            } elseif($ddState === 'bundled') {
+                $updateNotice .= '<a href="' . $urlSafe . '" target="_blank" rel="noopener">View release notes ↗</a>. '
+                    . '<details style="margin-top:8px;"><summary style="cursor:pointer;"><strong>How to update the bundled copy manually</strong></summary>'
+                    . '<ol style="margin:8px 0 0 18px;padding:0;line-height:1.6;">'
+                    . '<li>Download the latest source archive from <a href="' . $urlSafe . '" target="_blank" rel="noopener">' . $latestSafe . ' release page</a> (the <em>Source code (zip)</em> link).</li>'
+                    . '<li>Extract it on your computer. You will get a folder like <code>device-detector-' . $latestSafe . '/</code>.</li>'
+                    . '<li>Replace the contents of <code>/site/modules/NativeAnalytics/lib/matomo-device-detector/</code> with the contents of the extracted folder (keep the <code>lib/bootstrap.php</code> and <code>lib/spyc/</code> folder untouched).</li>'
+                    . '<li>Clear the ProcessWire module cache (<em>Modules → Refresh</em>) and reload this page.</li>'
+                    . '</ol></details>';
+            }
+        }
+
+        // "Up to date" suffix only when we successfully checked and current >= latest.
+        $upToDateSuffix = '';
+        if(!$updateAvailable && $latestVer !== '' && $currentVer !== '' && !$versionInfo['check_failed']) {
+            $latestSafe = htmlspecialchars($latestVer, ENT_QUOTES, 'UTF-8');
+            $upToDateSuffix = " <span style=\"opacity:.75\">(up to date — latest release is <code>{$latestSafe}</code>)</span>";
+        }
+        $currentSafe = htmlspecialchars($currentVer, ENT_QUOTES, 'UTF-8');
+        $versionTag = $currentVer !== '' ? " <code>{$currentSafe}</code>" : '';
+
+        if($ddState === 'composer') {
+            $f->value = $styleBlock . '<p class="pwna-bd-box pwna-bd-ok"><strong>✓ matomo/device-detector loaded via Composer' . $versionTag . '.</strong>'
+                . $upToDateSuffix
+                . ' NativeAnalytics is using the site-wide installation.'
+                . $updateNotice
+                . '</p>';
+        } elseif($ddState === 'bundled') {
+            $f->value = $styleBlock . '<p class="pwna-bd-box pwna-bd-info"><strong>✓ matomo/device-detector loaded from the bundled copy' . $versionTag . '.</strong>'
+                . $upToDateSuffix
+                . ' NativeAnalytics is using the version shipped with this module. For automatic updates between module releases, install the library site-wide:<br><code class="pwna-bd-cmd">composer require matomo/device-detector</code><br>The site-wide copy will take precedence over the bundled one automatically.'
+                . $updateNotice
+                . '</p>';
+        } else {
+            $f->value = $styleBlock . '<p class="pwna-bd-box pwna-bd-warn"><strong>⚠ matomo/device-detector not available.</strong> The bundled <code>lib/</code> folder may have been removed or corrupted. Reinstall the module, or install the library site-wide:<br><code class="pwna-bd-cmd">composer require matomo/device-detector</code></p>';
+        }
+        $f->showIf = 'trackingEnabled=1';
+        $wrapper->add($f);
+
+        $f = $wire->modules->get('InputfieldSelect');
+        $f->name = 'trackingMode';
+        $f->label = 'Tracking mode (bot resistance)';
+        $f->addOptions([
+            'js_first' => 'JavaScript first — recommended (most bot-resistant)',
+            'both' => 'Both — server-side + JavaScript (legacy, more bot noise)',
+            'server_only' => 'Server-side only — no JavaScript tracker (maximum coverage, maximum bot noise)',
+        ]);
+        $f->value = in_array((string) ($data['trackingMode'] ?? 'js_first'), ['js_first', 'both', 'server_only'], true) ? (string) $data['trackingMode'] : 'js_first';
+        $f->showIf = 'trackingEnabled=1';
+        $f->description = "JS-first means the browser tracker is the source of truth — bots that don't execute JavaScript are filtered out automatically. This typically reduces bot traffic by 60–80%. Visitors with JavaScript disabled won't be counted. 'Both' is the legacy behaviour: every page render is logged server-side AND the JS tracker fires. 'Server only' counts every render (including bots) — useful only if you need to track non-JS visitors.";
         $wrapper->add($f);
 
         $f = $wire->modules->get('InputfieldSelect');
@@ -724,6 +1130,26 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $f->rows = 5;
         $f->value = $data['excludePaths'] ?? "/processwire/\n/admin/\n/404/";
         $f->description = 'One path prefix per line. Requests that start with any of these prefixes will not be tracked.';
+        $wrapper->add($f);
+
+        $f = $wire->modules->get('InputfieldTextarea');
+        $f->name = 'suspiciousPathPatterns';
+        $f->showIf = 'trackingEnabled=1';
+        $f->label = 'Additional suspicious path patterns (optional)';
+        $f->rows = 5;
+        $f->value = $data['suspiciousPathPatterns'] ?? '';
+        $f->description = 'Optional. The module already auto-detects most bot probes — login/admin scans in 15+ languages, WordPress/Joomla/Drupal/Magento exploit paths, config leaks (.env, .git, wp-config), shell uploads, path traversal, and rate-limited IP scanners (2+ different 404 paths or 5+ total 404s in 5 min from same IP). Use this field only to add your own custom patterns specific to your site. One pattern per line; substring match, case-insensitive.';
+        $f->notes = 'Built-in auto-detection runs regardless of this field. Leave empty unless you have unique paths to filter.';
+        $wrapper->add($f);
+
+        $f = $wire->modules->get('InputfieldTextarea');
+        $f->name = 'ipBlocklist';
+        $f->showIf = 'trackingEnabled=1';
+        $f->label = 'Blocked IP addresses';
+        $f->rows = 5;
+        $f->value = $data['ipBlocklist'] ?? '';
+        $f->description = 'One IP address per line (or IP prefix like 192.168.). Requests from these IPs will NOT be tracked at all. Useful for blocking persistent scrapers and bots that bypass other filters. Add IPs manually here, or use the "Block this IP" button on the Current visitors panel.';
+        $f->notes = 'Examples: 1.2.3.4 (exact match), 1.2.3. (CIDR-like prefix matching), 2001:db8: (IPv6 prefix).';
         $wrapper->add($f);
 
         $f = $wire->modules->get('InputfieldText');
@@ -899,7 +1325,153 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $f->description = 'Advanced option. Usually best left empty. A custom salt changes how anonymous visitor and session hashes are generated for this installation.';
         $wrapper->add($f);
 
+        // ------------------------------------------------------------------
+        // Reorganize the flat field list into grouped, collapsible fieldsets
+        // with two-column layouts where it helps reduce vertical scrolling.
+        // ------------------------------------------------------------------
+        $organized = self::organizeConfigFields($wrapper, $wire);
+        if($organized instanceof InputfieldWrapper) $wrapper = $organized;
+
         return $wrapper;
+    }
+
+    /**
+     * Take the flat $wrapper produced by getModuleConfigInputfields() and
+     * return a new wrapper with the same fields grouped into fieldsets.
+     * Unknown fields are appended at the end so future additions don't get
+     * silently dropped.
+     */
+    protected static function organizeConfigFields(InputfieldWrapper $flat, $wire) {
+        // Index existing fields by name for quick retrieval.
+        $byName = [];
+        foreach($flat->children() as $child) {
+            $name = (string) $child->name;
+            if($name === '') continue;
+            $byName[$name] = $child;
+        }
+
+        // Groups: [fieldset label, icon, collapsed?, [[field, columnWidth%], ...]]
+        $groups = [
+            [
+                'General tracking',
+                'toggle-on',
+                false,
+                [
+                    ['trackingEnabled', 100],
+                    ['eventTrackingEnabled', 50],
+                    ['showPageEditAnalytics', 50],
+                    ['botDetectionStatus', 100],
+                    ['trackingMode', 50],
+                    ['trackingStorageMode', 50],
+                ],
+            ],
+            [
+                'Privacy & consent',
+                'shield',
+                true,
+                [
+                    ['respectDnt', 50],
+                    ['requireConsent', 50],
+                    ['consentCookieName', 50],
+                    ['privacyWireConsentCookieMaxAge', 50],
+                    ['privacyWireAutoConsent', 100],
+                    ['privacyWireStorageKey', 50],
+                    ['privacyWireGroups', 50],
+                ],
+            ],
+            [
+                'Data retention & performance',
+                'database',
+                true,
+                [
+                    ['rawRetentionDays', 50],
+                    ['rawEventRetentionDays', 50],
+                    ['highTrafficMode', 50],
+                    ['realtimeWindowMinutes', 50],
+                    ['ignoreQueryString', 100],
+                ],
+            ],
+            [
+                'Filters & exclusions',
+                'filter',
+                true,
+                [
+                    ['excludeRoles', 100],
+                    ['excludePaths', 50],
+                    ['ipBlocklist', 50],
+                    ['suspiciousPathPatterns', 50],
+                    ['searchQueryVars', 50],
+                ],
+            ],
+            [
+                'Dashboard display',
+                'tachometer',
+                true,
+                [
+                    ['dashboardDefaultRange', 50],
+                    ['displayDateFormat', 50],
+                ],
+            ],
+            [
+                'Monthly email reports',
+                'envelope',
+                true,
+                [
+                    ['monthlyReportsEnabled', 100],
+                    ['monthlyReportRecipients', 50],
+                    ['monthlyReportFromEmail', 50],
+                    ['monthlyReportSendDay', 50],
+                    ['monthlyReportAttachPdf', 50],
+                    ['monthlyReportIncludeTopPages', 33],
+                    ['monthlyReportIncludeReferrers', 33],
+                    ['monthlyReportIncludeEvents', 34],
+                    ['monthlyReportTestTool', 100],
+                    ['monthlyReportPreview', 100],
+                    ['monthlyReportLastSentPeriod', 100],
+                ],
+            ],
+            [
+                'Advanced',
+                'wrench',
+                true,
+                [
+                    ['hashSalt', 100],
+                ],
+            ],
+        ];
+
+        $newWrapper = new InputfieldWrapper();
+        $assigned = [];
+
+        foreach($groups as $g) {
+            list($label, $icon, $collapsed, $fields) = $g;
+            $fs = $wire->modules->get('InputfieldFieldset');
+            $fs->label = $label;
+            if($icon) $fs->icon = $icon;
+            $fs->collapsed = $collapsed ? Inputfield::collapsedYes : Inputfield::collapsedNo;
+
+            $hasAny = false;
+            foreach($fields as $entry) {
+                list($fieldName, $width) = $entry;
+                if(!isset($byName[$fieldName])) continue;
+                $field = $byName[$fieldName];
+                if($width && $width > 0 && $width <= 100) {
+                    $field->columnWidth = (int) $width;
+                }
+                $fs->add($field);
+                $assigned[$fieldName] = true;
+                $hasAny = true;
+            }
+            if($hasAny) $newWrapper->add($fs);
+        }
+
+        // Append anything we missed so future fields aren't lost silently.
+        foreach($byName as $name => $field) {
+            if(isset($assigned[$name])) continue;
+            $newWrapper->add($field);
+        }
+
+        return $newWrapper;
     }
 
     public function shouldTrackCurrentRequest() {
@@ -911,9 +1483,11 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         if($input->requestMethod() !== 'GET') return false;
         if((int) $input->get('pwna_event') === 1) return false;
         if($this->isRoleExcluded()) return false;
+        if($this->isIpBlocked()) return false;
         if(!$page || !$page->id) return false;
         if($page->template && $page->template->name === 'admin') return false;
         if($this->isIgnorableRequestForPageview()) return false;
+        if($this->isSuspiciousProbePath()) return false;
         if($this->requireConsent && !$this->hasConsentCookie()) return false;
 
         foreach($this->getExcludedPathPrefixes() as $prefix) {
@@ -932,6 +1506,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         if($input->requestMethod() !== 'GET') return false;
         if((int) $input->get('pwna_event') === 1) return false;
         if($this->isRoleExcluded()) return false;
+        if($this->isIpBlocked()) return false;
         if(!$page || !$page->id) return false;
         if($page->template && $page->template->name === 'admin') return false;
         if($this->isIgnorableRequestForPageview()) return false;
@@ -947,6 +1522,219 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $name = trim((string) $this->consentCookieName);
         if($name === '') return true;
         return isset($_COOKIE[$name]) && (string) $_COOKIE[$name] !== '';
+    }
+
+    /**
+     * Check if the requesting IP is in the user-configured blocklist.
+     * Supports:
+     *   - exact IP match: "1.2.3.4"
+     *   - prefix match: "192.168." or "2001:db8:"
+     *   - hashed entries: "hash:abcd1234..." (used by the Block button in admin
+     *     since raw IPs aren't stored long-term)
+     */
+    public function isIpBlocked($ip = null) {
+        $blocklist = trim((string) $this->ipBlocklist);
+        if($blocklist === '') return false;
+
+        if($ip === null) $ip = $this->getClientIp();
+        if($ip === '') return false;
+        $ipHash = $this->hashValue($ip);
+
+        foreach(preg_split('/\R+/', $blocklist) as $entry) {
+            $entry = trim($entry);
+            if($entry === '') continue;
+            // Hashed entry (added via "Block this IP" admin button)
+            if(strpos($entry, 'hash:') === 0) {
+                if(substr($entry, 5) === $ipHash) return true;
+                continue;
+            }
+            // Exact match
+            if($ip === $entry) return true;
+            // Prefix match (entry ends with . or :)
+            if(strpos($ip, $entry) === 0 && (substr($entry, -1) === '.' || substr($entry, -1) === ':')) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Add an entry (raw IP or hash:...) to the blocklist config.
+     */
+    public function addIpToBlocklist($entry) {
+        $entry = trim((string) $entry);
+        if($entry === '') return false;
+        $current = trim((string) $this->ipBlocklist);
+        $lines = $current === '' ? [] : preg_split('/\R+/', $current);
+        $lines = array_map('trim', $lines);
+        if(in_array($entry, $lines, true)) return true;
+        $lines[] = $entry;
+        $newValue = implode("\n", array_filter($lines));
+        $this->wire('modules')->saveConfig($this, 'ipBlocklist', $newValue);
+        $this->ipBlocklist = $newValue;
+        return true;
+    }
+
+    /**
+     * Built-in auto-detection of probing patterns (no user config needed).
+     * Returns true if the path looks like a bot probe based on universal patterns
+     * used by vulnerability scanners and brute force tools across all CMSes.
+     */
+    protected function matchesBuiltInProbePattern($path) {
+        if($path === '' || $path === '/') return false;
+        $p = mb_strtolower($path);
+
+        // Common login/admin probes (multilingual)
+        // Matches /login, /prijava, /anmeldung, /connexion, /accedi, /iniciar-sesion, /entrar etc.
+        // Word boundary via slash or end ensures we don't match e.g. /catalog/loginitems/
+        $loginWords = '(?:login|signin|sign-in|log-in|prijava|anmeldung|anmelden|connexion|connecter|accedi|entrar|iniciar-sesion|iniciar_sesion|acceso|inloggen|aanmelden|logga-in|kirjaudu|wp-login|admin|administrator|administracja|administrace|panel|cpanel|webmail|user|users|account|signup|register|registracija|registrace|kayit|kayit-ol)';
+        if(preg_match('#(?:^|/)' . $loginWords . '(?:\.php|/|$)#i', $p)) return true;
+
+        // Common file probes (config leaks, exploit attempts)
+        $fileProbes = '(?:wp-config|configuration|config|settings)\.(?:php|inc|bak|old|txt|yml|yaml|json)';
+        if(preg_match('#/' . $fileProbes . '(?:[\.~]|$)#i', $p)) return true;
+
+        // Sensitive file/dir probes
+        if(preg_match('#/\.(?:env|git|svn|hg|aws|ssh|htpasswd|htaccess|DS_Store|vscode|idea|composer|npm|yarn|docker|kube)#i', $p)) return true;
+
+        // CMS-specific paths (WordPress, Joomla, Drupal, Magento, Laravel, Bitrix)
+        $cmsPaths = '(?:wp-admin|wp-includes|wp-content|xmlrpc\.php|wp-json|/wp/|administrator/|admin/index\.php|user/login|sites/default|magmi|index\.php\?option=com_|j_security_check|cgi-bin|telescope/requests|debug/default/view|_ignition|_profiler|bitrix/admin|bitrix/tools|/typo3|backend\.php|umbraco|sitecore|kentico)';
+        if(preg_match('#/' . $cmsPaths . '#i', $p)) return true;
+
+        // Database/admin tools
+        if(preg_match('#/(?:phpmyadmin|pma|myadmin|mysql|sqladmin|adminer|phpinfo|info\.php|server-status|server-info)(?:[/.\?]|$)#i', $p)) return true;
+
+        // Backup / archive probes
+        if(preg_match('#/(?:backup|backups|dump|sql|bak|old|temp|tmp|cache)\.(?:sql|gz|tar|zip|rar|7z)$#i', $p)) return true;
+
+        // Shell / RCE attempts (common backdoor filenames)
+        if(preg_match('#/(?:shell|cmd|c99|r57|b374k|wso|webshell|backdoor|eval|exec|hax|hack|filemanager)(?:\.|/)#i', $p)) return true;
+
+        // Suspicious ext on non-tech sites (.asp/.aspx/.jsp/.cfm/.cgi - if user runs PHP, these are 99% probes)
+        if(preg_match('#\.(?:asp|aspx|jsp|jspx|cfm|cgi|pl|env|sql|bak|swp|orig|save|rej)(?:[\?\#]|$)#i', $p)) return true;
+
+        // Path traversal attempts
+        if(strpos($p, '../') !== false || strpos($p, '..%2f') !== false || strpos($p, '%2e%2e/') !== false) return true;
+
+        // Vendor / framework leaks
+        if(preg_match('#/(?:vendor|node_modules|composer\.(?:json|lock)|package(?:-lock)?\.json|yarn\.lock|gemfile|requirements\.txt)#i', $p)) return true;
+
+        // Common probe filenames at root
+        if(preg_match('#^/(?:phpunit|owa|webdav|fckeditor|tinymce|ckeditor|elmah|trace\.axd|crossdomain\.xml|clientaccesspolicy\.xml)#i', $p)) return true;
+
+        return false;
+    }
+
+    /**
+     * Rate-limit based bot detection. Triggers when the same IP shows
+     * scanner-like behavior in the last 5 minutes:
+     *  - 2+ distinct 404 paths, OR
+     *  - 5+ total 404 hits (even to the same path repeatedly)
+     * Both conditions catch different bot patterns (vulnerability scanners vs. hammering bots).
+     * Uses an in-memory static cache per request to avoid repeated DB hits.
+     */
+    protected function ipIsRecent404Scanner($ipHash = null) {
+        if($ipHash === null) {
+            $ipHash = $this->hashValue($this->getClientIp());
+        }
+        if(empty($ipHash)) return false;
+
+        static $cache = [];
+        if(isset($cache[$ipHash])) return $cache[$ipHash];
+
+        try {
+            $db = $this->wire('database');
+            $sql = "SELECT COUNT(DISTINCT path) AS distinct_paths, COUNT(*) AS total_hits
+                    FROM `" . self::HITS_TABLE . "`
+                    WHERE ip_hash = :iphash
+                      AND status_code = 404
+                      AND created_at >= DATE_SUB(NOW(), INTERVAL 5 MINUTE)";
+            $stmt = $db->prepare($sql);
+            $stmt->execute([':iphash' => $ipHash]);
+            $row = $stmt->fetch(\PDO::FETCH_ASSOC) ?: ['distinct_paths' => 0, 'total_hits' => 0];
+            $distinct = (int) $row['distinct_paths'];
+            $total = (int) $row['total_hits'];
+            // Either 2+ distinct paths OR 5+ total hits in 5 min = scanner
+            $cache[$ipHash] = ($distinct >= 2 || $total >= 5);
+        } catch(\Throwable $e) {
+            $cache[$ipHash] = false;
+        }
+        return $cache[$ipHash];
+    }
+
+    /**
+     * Detect scanner-like behaviour by visitor_hash on the hits table.
+     * Used by realtime/current-visitors rendering where the sessions table
+     * does not store ip_hash (only visitor_hash). Same thresholds as
+     * ipIsRecent404Scanner(): 2+ distinct paths OR 5+ hits in last 5 minutes.
+     */
+    protected function visitorIsRecent404Scanner($visitorHash) {
+        if(empty($visitorHash)) return false;
+
+        static $cache = [];
+        if(isset($cache[$visitorHash])) return $cache[$visitorHash];
+
+        try {
+            $db = $this->wire('database');
+            $sql = "SELECT COUNT(DISTINCT path) AS distinct_paths, COUNT(*) AS total_hits
+                    FROM `" . self::HITS_TABLE . "`
+                    WHERE visitor_hash = :vhash
+                      AND status_code = 404
+                      AND created_at >= DATE_SUB(NOW(), INTERVAL 5 MINUTE)";
+            $stmt = $db->prepare($sql);
+            $stmt->execute([':vhash' => $visitorHash]);
+            $row = $stmt->fetch(\PDO::FETCH_ASSOC) ?: ['distinct_paths' => 0, 'total_hits' => 0];
+            $distinct = (int) $row['distinct_paths'];
+            $total = (int) $row['total_hits'];
+            $cache[$visitorHash] = ($distinct >= 2 || $total >= 5);
+        } catch(\Throwable $e) {
+            $cache[$visitorHash] = false;
+        }
+        return $cache[$visitorHash];
+    }
+
+    /**
+     * Detect 404 requests from unidentifiable user-agents.
+     * Real browsers always have recognizable UA strings; "Other browser + Other OS"
+     * almost always indicates a scripted bot/scraper with custom or minimal UA.
+     * For 404 requests specifically, this combination is a strong bot signal.
+     */
+    protected function isLikelyBotFromUserAgent($ua) {
+        if($ua === '' || $ua === null) return true; // no UA at all is suspicious
+        $device = $this->parseUserAgent($ua);
+        $browserUnknown = !$device['browser'] || strtolower((string) $device['browser']) === 'other';
+        $osUnknown = !$device['os'] || strtolower((string) $device['os']) === 'other';
+        return $browserUnknown && $osUnknown;
+    }
+
+    /**
+     * Check whether the requested path matches a known suspicious/probe pattern.
+     * Combines THREE detection layers (all auto, plus user-customizable):
+     *  1. Built-in regex patterns (multilingual login probes, CMS exploits, config leaks etc.)
+     *  2. User-configured patterns from `suspiciousPathPatterns` (substring match)
+     *  3. IP-based 404 scanner rate limit (2+ distinct 404 paths or 5+ total 404s in 5 min)
+     * Returns true if any layer triggers.
+     */
+    protected function isSuspiciousProbePath($path = null) {
+        if($path === null) {
+            $requestUri = isset($_SERVER['REQUEST_URI']) ? (string) $_SERVER['REQUEST_URI'] : '';
+            $path = $this->normalizePath((string) parse_url($requestUri, PHP_URL_PATH));
+        }
+        if($path === '' || $path === '/') return false;
+
+        // Layer 1: built-in auto patterns (handles multilingual logins, CMS probes, exploits)
+        if($this->matchesBuiltInProbePattern($path)) return true;
+
+        // Layer 2: user-configured custom patterns (substring match, case-insensitive)
+        $patterns = trim((string) $this->suspiciousPathPatterns);
+        if($patterns !== '') {
+            $pathLower = mb_strtolower($path);
+            foreach(preg_split('/\R+/', $patterns) as $pattern) {
+                $pattern = trim($pattern);
+                if($pattern === '') continue;
+                if(mb_strpos($pathLower, mb_strtolower($pattern)) !== false) return true;
+            }
+        }
+
+        return false;
     }
 
     protected function isIgnorableRequestForPageview() {
@@ -981,6 +1769,9 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $page = $event->object;
         if(!$page instanceof Page || !$page->id) return;
 
+        $mode = $this->getTrackingMode();
+        $jsIsPrimary = ($mode === 'js_first' || $mode === 'js_only');
+
         $payload = [
             'trackEndpoint' => $this->getTrackEndpointUrl(),
             'path' => $this->getRequestPathForStorage(),
@@ -991,8 +1782,11 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             'consentRequired' => (bool) $this->requireConsent,
             'consentCookieName' => (string) $this->consentCookieName,
             'respectDnt' => (bool) $this->respectDnt,
-            'autoTrack' => false,
-            'needsClientPageview' => (bool) ($this->requireConsent && !$this->hasConsentCookie()),
+            // When JS is the primary source of pageviews, fire one on load.
+            'autoTrack' => $jsIsPrimary,
+            // When server-side is disabled and consent is needed, JS must still fire
+            // the pageview after consent is given.
+            'needsClientPageview' => $jsIsPrimary || (bool) ($this->requireConsent && !$this->hasConsentCookie()),
             'eventTracking' => (bool) $this->eventTrackingEnabled,
             'storageMode' => $this->getTrackingStorageMode(),
             'privacyWireAutoConsent' => (bool) $this->privacyWireAutoConsent,
@@ -1081,10 +1875,26 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $ua = isset($_SERVER['HTTP_USER_AGENT']) ? trim((string) $_SERVER['HTTP_USER_AGENT']) : '';
         if($this->isBotUserAgent($ua)) return;
         if($this->respectDnt && isset($_SERVER['HTTP_DNT']) && (string) $_SERVER['HTTP_DNT'] === '1') return;
+        if($this->isSuspiciousProbePath()) return;
+        if($this->isIpBlocked()) return;
 
         $ids = $this->getOrCreateTrackingIds();
         $statusCode = $this->detectStatusCode($page);
         $path = $statusCode === 404 ? $this->getRequestedPathWithoutQuery() : $this->getCanonicalPagePath($page);
+
+        // Skip 404 if path is actually resolvable via redirect modules
+        // (PagePathHistory, ProcessRedirects, Jumplinks). This avoids logging
+        // false 404s for paths that get redirected to a valid page.
+        if($statusCode === 404 && $this->pathResolvesToValidPage($path)) return;
+
+        // Aggressive 404 bot detection (combined signals):
+        // 1. IP scanner rate limit (2+ distinct or 5+ total 404s in 5 min)
+        // 2. Unrecognizable user-agent (Other browser + Other OS) on a 404
+        if($statusCode === 404) {
+            if($this->ipIsRecent404Scanner()) return;
+            if($this->isLikelyBotFromUserAgent($ua)) return;
+        }
+
         $url = $this->trimValue($this->getCurrentRequestUrl(), 767);
         $referrerUrl = isset($_SERVER['HTTP_REFERER']) ? trim((string) $_SERVER['HTTP_REFERER']) : '';
         $referrerHost = '';
@@ -1230,6 +2040,202 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         return false;
     }
 
+    /**
+     * Check if a "404" path actually resolves to a real page via redirect modules.
+     * Checks PagePathHistory, ProcessRedirects and Jumplinks (whichever are installed).
+     * Returns true if the path is resolvable (so the 404 should NOT be tracked / shown).
+     */
+    public function pathResolvesToValidPage($path) {
+        $path = $this->normalizePath((string) $path);
+        if($path === '' || $path === '/') return false;
+
+        $modules = $this->wire('modules');
+        $pages = $this->wire('pages');
+
+        // 1. PagePathHistory (core PW module) — automatic redirects when page name/parent changes
+        if($modules->isInstalled('PagePathHistory')) {
+            try {
+                $pph = $modules->get('PagePathHistory');
+                if(method_exists($pph, 'getPage')) {
+                    $page = $pph->getPage($path);
+                    if($page && $page->id) return true;
+                }
+            } catch(\Exception $e) {
+                // silently ignore
+            }
+        }
+
+        // 2. ProcessRedirects (3rd party but very common)
+        if($modules->isInstalled('ProcessRedirects')) {
+            try {
+                $db = $this->wire('database');
+                $stmt = $db->prepare("SELECT redirect_to FROM process_redirects WHERE redirect_from = :path LIMIT 1");
+                $stmt->execute([':path' => $path]);
+                $row = $stmt->fetch(\PDO::FETCH_ASSOC);
+                if($row && !empty($row['redirect_to'])) return true;
+            } catch(\Exception $e) {
+                // ignore (table may not exist)
+            }
+        }
+
+        // 3. Jumplinks (3rd party)
+        if($modules->isInstalled('ProcessJumplinks')) {
+            try {
+                $db = $this->wire('database');
+                $stmt = $db->prepare("SELECT destination FROM jumplinks WHERE source = :path LIMIT 1");
+                $stmt->execute([':path' => $path]);
+                $row = $stmt->fetch(\PDO::FETCH_ASSOC);
+                if($row && !empty($row['destination'])) return true;
+            } catch(\Exception $e) {
+                // ignore
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Cleanup helper: remove suspicious probe paths from the DB.
+     * Useful for cleaning out brute force / vulnerability scan attempts
+     * that were tracked before suspicious-path filtering was configured.
+     * Returns the number of records removed from hits/realtime sessions.
+     */
+    public function cleanupSuspiciousPaths() {
+        $db = $this->wire('database');
+        $removedEntries = 0;
+        $affectedDays = [];
+
+        // 1. Get all distinct paths from hits and check each via isSuspiciousProbePath
+        $stmt = $db->prepare("SELECT DISTINCT path FROM `" . self::HITS_TABLE . "`");
+        $stmt->execute();
+        $paths = $stmt->fetchAll(\PDO::FETCH_COLUMN) ?: [];
+
+        foreach($paths as $path) {
+            if($this->isSuspiciousProbePath($path)) {
+                $this->collectAffectedHitDays($affectedDays, "`path` = :path", [':path' => $path]);
+
+                $del = $db->prepare("DELETE FROM `" . self::HITS_TABLE . "` WHERE path = :path");
+                $del->execute([':path' => $path]);
+                $removedEntries += (int) $del->rowCount();
+
+                $del2 = $db->prepare("DELETE FROM `" . self::SESSIONS_TABLE . "` WHERE current_path = :path");
+                $del2->execute([':path' => $path]);
+                $removedEntries += (int) $del2->rowCount();
+            }
+        }
+
+        // 2. Clean up 404 sessions where browser AND os are 'other' (likely bots)
+        try {
+            $del = $db->prepare("DELETE FROM `" . self::SESSIONS_TABLE . "`
+                                 WHERE status_code = 404
+                                   AND (browser = '' OR LOWER(browser) = 'other')
+                                   AND (os = '' OR LOWER(os) = 'other')");
+            $del->execute();
+            $removedEntries += (int) $del->rowCount();
+        } catch(\Throwable $e) {
+            // ignore
+        }
+
+        // 3. Clean up 404 hits from IPs that look like scanners (2+ distinct or 5+ total 404s from each IP)
+        try {
+            $stmt = $db->prepare("SELECT ip_hash, COUNT(DISTINCT path) AS dp, COUNT(*) AS th
+                                  FROM `" . self::HITS_TABLE . "`
+                                  WHERE status_code = 404
+                                  GROUP BY ip_hash
+                                  HAVING dp >= 2 OR th >= 5");
+            $stmt->execute();
+            $scannerIps = $stmt->fetchAll(\PDO::FETCH_COLUMN) ?: [];
+            if($scannerIps) {
+                $placeholders = implode(',', array_fill(0, count($scannerIps), '?'));
+
+                $dayStmt = $db->prepare("SELECT DISTINCT DATE(created_at) FROM `" . self::HITS_TABLE . "`
+                                          WHERE status_code = 404 AND ip_hash IN ({$placeholders})");
+                $dayStmt->execute($scannerIps);
+                foreach($dayStmt->fetchAll(\PDO::FETCH_COLUMN) ?: [] as $day) $affectedDays[(string) $day] = true;
+
+                // Collect visitor_hashes tied to those scanner ip_hashes BEFORE deleting hits.
+                // The sessions table has no ip_hash column, but it does have visitor_hash,
+                // so we bridge through hits to find which sessions to clean up.
+                $vstmt = $db->prepare("SELECT DISTINCT visitor_hash FROM `" . self::HITS_TABLE . "`
+                                       WHERE status_code = 404 AND ip_hash IN ({$placeholders})");
+                $vstmt->execute($scannerIps);
+                $scannerVisitors = $vstmt->fetchAll(\PDO::FETCH_COLUMN) ?: [];
+
+                $del = $db->prepare("DELETE FROM `" . self::HITS_TABLE . "` WHERE status_code = 404 AND ip_hash IN ({$placeholders})");
+                $del->execute($scannerIps);
+                $removedEntries += (int) $del->rowCount();
+
+                if($scannerVisitors) {
+                    $vph = implode(',', array_fill(0, count($scannerVisitors), '?'));
+                    $del2 = $db->prepare("DELETE FROM `" . self::SESSIONS_TABLE . "` WHERE status_code = 404 AND visitor_hash IN ({$vph})");
+                    $del2->execute($scannerVisitors);
+                    $removedEntries += (int) $del2->rowCount();
+                }
+            }
+        } catch(\Throwable $e) {
+            // ignore
+        }
+
+        if($removedEntries > 0) $this->rebuildAffectedAggregateDays($affectedDays);
+        return $removedEntries;
+    }
+
+    /**
+     * Cleanup helper: remove 404 hits from the DB whose path now resolves
+     * to a valid page (e.g. via PagePathHistory after a page was renamed).
+     * Returns the number of records removed from hits/realtime sessions.
+     */
+    public function cleanupResolvable404s() {
+        $db = $this->wire('database');
+        $stmt = $db->prepare("SELECT DISTINCT path FROM `" . self::HITS_TABLE . "` WHERE status_code = 404");
+        $stmt->execute();
+        $paths = $stmt->fetchAll(\PDO::FETCH_COLUMN) ?: [];
+
+        $removed = 0;
+        $affectedDays = [];
+        foreach($paths as $path) {
+            if($this->pathResolvesToValidPage($path)) {
+                $this->collectAffectedHitDays($affectedDays, "`status_code` = 404 AND `path` = :path", [':path' => $path]);
+
+                $del = $db->prepare("DELETE FROM `" . self::HITS_TABLE . "` WHERE status_code = 404 AND path = :path");
+                $del->execute([':path' => $path]);
+                $removed += (int) $del->rowCount();
+
+                $del2 = $db->prepare("DELETE FROM `" . self::SESSIONS_TABLE . "` WHERE status_code = 404 AND current_path = :path");
+                $del2->execute([':path' => $path]);
+                $removed += (int) $del2->rowCount();
+            }
+        }
+        if($removed > 0) $this->rebuildAffectedAggregateDays($affectedDays);
+        return $removed;
+    }
+
+    protected function collectAffectedHitDays(array &$affectedDays, $whereSql, array $params = []) {
+        try {
+            $stmt = $this->wire('database')->prepare("SELECT DISTINCT DATE(created_at) FROM `" . self::HITS_TABLE . "` WHERE {$whereSql}");
+            $stmt->execute($params);
+            foreach($stmt->fetchAll(\PDO::FETCH_COLUMN) ?: [] as $day) {
+                $day = (string) $day;
+                if($day !== '') $affectedDays[$day] = true;
+            }
+        } catch(\Throwable $e) {
+            // non-fatal; cleanup should still run
+        }
+    }
+
+    protected function rebuildAffectedAggregateDays(array $affectedDays) {
+        foreach(array_keys($affectedDays) as $day) {
+            $day = (string) $day;
+            if(!preg_match('/^\d{4}-\d{2}-\d{2}$/', $day) || $day === '0000-00-00') continue;
+            try {
+                $this->rebuildDailyAggregate($day);
+                $this->rebuildGoalDailyAggregate($day);
+            } catch(\Throwable $e) {
+                $this->wire('log')->save('native-analytics', 'Aggregate rebuild after cleanup failed for ' . $day . ': ' . $e->getMessage());
+            }
+        }
+    }
+
     protected function getCanonicalPagePath(Page $page = null) {
         if(!$page || !$page->id) return '/';
         return $this->normalizePath((string) $page->path());
@@ -1238,6 +2244,28 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
     protected function getRequestedPathWithoutQuery() {
         $requestUri = isset($_SERVER['REQUEST_URI']) ? (string) $_SERVER['REQUEST_URI'] : '/';
         return $this->normalizePath((string) parse_url($requestUri, PHP_URL_PATH));
+    }
+
+    protected function isTrackingEndpointRequest() {
+        $requestUri = isset($_SERVER['REQUEST_URI']) ? (string) $_SERVER['REQUEST_URI'] : '';
+        if($requestUri === '') return false;
+        $requestPath = (string) parse_url($requestUri, PHP_URL_PATH);
+        $normalized = rtrim($this->normalizePath($requestPath), '/');
+        return $normalized === '/pwna-track';
+    }
+
+    protected function getPayloadPathForStorage(array $payload) {
+        foreach(['path', 'pathname'] as $key) {
+            if(isset($payload[$key]) && is_scalar($payload[$key])) {
+                $path = trim((string) $payload[$key]);
+                if($path !== '') return $this->normalizePath($path);
+            }
+        }
+        if(isset($payload['url']) && is_scalar($payload['url'])) {
+            $url = trim((string) $payload['url']);
+            if($url !== '') return $this->normalizePath($url);
+        }
+        return '';
     }
 
     protected function normalizeAnalyticsRowForDisplay(array $row, $pathKey = 'path') {
@@ -1287,7 +2315,9 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         }
         $ua = isset($_SERVER['HTTP_USER_AGENT']) ? trim((string) $_SERVER['HTTP_USER_AGENT']) : '';
         if($this->isBotUserAgent($ua)) $this->sendTrackingResponse(204);
+        if($this->isIpBlocked()) $this->sendTrackingResponse(204);
         if($this->respectDnt && isset($_SERVER['HTTP_DNT']) && (string) $_SERVER['HTTP_DNT'] === '1') $this->sendTrackingResponse(204);
+        if($this->isSuspiciousProbePath($payload['path'] ?? null)) $this->sendTrackingResponse(204);
         if($this->requireConsent && !$this->hasConsentCookie()) $this->sendTrackingResponse(204);
 
         $ids = $this->resolveIncomingTrackingIds($payload);
@@ -1298,11 +2328,26 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         }
 
         $page = $this->wire('page');
+        $endpointRequest = $this->isTrackingEndpointRequest();
+        $payloadPath = $this->getPayloadPathForStorage($payload);
+        if($payloadPath === '') $payloadPath = $this->getRequestPathForStorage();
+
         $statusCode = isset($payload['statusCode']) ? max(100, min(599, (int) $payload['statusCode'])) : 200;
-        if($page && $page->id && !$this->is404Page($page)) {
+        if(!$endpointRequest && $page && $page->id && !$this->is404Page($page)) {
             $statusCode = 200;
         }
-        $path = $statusCode === 404 ? $this->getRequestedPathWithoutQuery() : $this->getRequestPathForStorage();
+        $path = $payloadPath;
+
+        // Same aggressive 404 bot filtering as the server-side pipeline:
+        //  - IP-rate-limited 404 scanners
+        //  - Unidentifiable user-agents on a 404
+        //  - 404s on paths that actually resolve via redirect modules
+        if($statusCode === 404) {
+            if($this->pathResolvesToValidPage($path)) $this->sendTrackingResponse(204);
+            if($this->ipIsRecent404Scanner()) $this->sendTrackingResponse(204);
+            if($this->isLikelyBotFromUserAgent($ua)) $this->sendTrackingResponse(204);
+        }
+
         $url = $this->trimValue((string) ($payload['url'] ?? $this->getCurrentRequestUrl()), 767);
 
         $pageId = max(0, (int) ($payload['pageId'] ?? 0));
@@ -1312,7 +2357,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             $template = '404';
             $pageId = 0;
             $pageTitle = '404';
-        } elseif($page && $page->id && $page->template && $page->template->name !== 'admin') {
+        } elseif(!$endpointRequest && $page && $page->id && $page->template && $page->template->name !== 'admin') {
             $pageId = (int) $page->id;
             $pageTitle = $this->cleanTextValue((string) $page->get('title'), 255);
             if($template === '') $template = $page->template->name;
@@ -1380,7 +2425,9 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
 
         $ua = isset($_SERVER['HTTP_USER_AGENT']) ? trim((string) $_SERVER['HTTP_USER_AGENT']) : '';
         if($this->isBotUserAgent($ua)) $this->sendTrackingResponse(204);
+        if($this->isIpBlocked()) $this->sendTrackingResponse(204);
         if($this->respectDnt && isset($_SERVER['HTTP_DNT']) && (string) $_SERVER['HTTP_DNT'] === '1') $this->sendTrackingResponse(204);
+        if($this->isSuspiciousProbePath($payload['path'] ?? null)) $this->sendTrackingResponse(204);
         if($this->requireConsent && !$this->hasConsentCookie()) $this->sendTrackingResponse(204);
 
         $ids = $this->resolveIncomingTrackingIds($payload);
@@ -1396,12 +2443,14 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         if($group === '') $group = $this->inferEventGroup($name);
 
         $page = $this->wire('page');
-        $path = $this->getRequestPathForStorage();
+        $endpointRequest = $this->isTrackingEndpointRequest();
+        $path = $this->getPayloadPathForStorage($payload);
+        if($path === '') $path = $this->getRequestPathForStorage();
         $url = $this->trimValue((string) ($payload['url'] ?? $this->getCurrentRequestUrl()), 767);
         $pageId = max(0, (int) ($payload['pageId'] ?? 0));
         $pageTitle = $this->cleanTextValue((string) ($payload['pageTitle'] ?? ''), 255);
         $template = trim((string) ($payload['template'] ?? ''));
-        if($page && $page->id && $page->template && $page->template->name !== 'admin') {
+        if(!$endpointRequest && $page && $page->id && $page->template && $page->template->name !== 'admin') {
             if($pageId < 1) $pageId = (int) $page->id;
             if($pageTitle === '') $pageTitle = $this->cleanTextValue((string) $page->get('title'), 255);
             if($template === '') $template = (string) $page->template->name;
@@ -1648,20 +2697,40 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
     public function getCurrentVisitors($minutes = null, $limit = 25, array $filters = []) {
         $minutes = $minutes ?: (int) $this->realtimeWindowMinutes;
         $where = $this->buildRealtimeWhere($minutes, $filters);
-        $sql = "SELECT page_id, page_title, template, current_path, current_url, referrer_host, device_type, browser, os,
+        // Fetch more rows than needed, so we can filter out bot sessions
+        $fetchLimit = max(100, (int) $limit * 4);
+        $sql = "SELECT page_id, page_title, template, current_path, current_url, referrer_host, device_type, browser, os, visitor_hash,
                        first_seen_at, last_seen_at, hit_count, status_code
                 FROM `" . self::SESSIONS_TABLE . "`
                 WHERE {$where['sql']}
                 ORDER BY last_seen_at DESC
-                LIMIT " . (int) $limit;
+                LIMIT " . $fetchLimit;
         $stmt = $this->wire('database')->prepare($sql);
         $stmt->execute($where['params']);
         $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC) ?: [];
-        foreach($rows as &$row) {
+
+        $result = [];
+        foreach($rows as $row) {
             $row = $this->normalizeAnalyticsRowForDisplay($row, 'current_path');
+            // Hide bot sessions from the live "Current visitors" panel:
+            //   - 404 sessions whose IP is currently behaving like a scanner
+            //   - 404 sessions with unidentifiable browser/OS
+            //   - sessions whose path matches built-in probe patterns
+            $isProbeSession = false;
+            $statusCode = (int) ($row['status_code'] ?? 0);
+            if($statusCode === 404) {
+                if(!empty($row['visitor_hash']) && $this->visitorIsRecent404Scanner($row['visitor_hash'])) $isProbeSession = true;
+                $browser = strtolower((string) ($row['browser'] ?? ''));
+                $os = strtolower((string) ($row['os'] ?? ''));
+                if(($browser === '' || $browser === 'other') && ($os === '' || $os === 'other')) $isProbeSession = true;
+            }
+            if(!empty($row['current_path']) && $this->matchesBuiltInProbePattern($row['current_path'])) $isProbeSession = true;
+
+            if($isProbeSession) continue;
+            $result[] = $row;
+            if(count($result) >= (int) $limit) break;
         }
-        unset($row);
-        return $rows;
+        return $result;
     }
 
     public function getDailySeries($days = 30, array $filters = []) {
@@ -1848,20 +2917,27 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
 
     public function getTop404Paths($days = 30, $limit = 15) {
         $where = $this->buildWhere([], $this->getDateRangeForDays($days), ["status_code = 404"]);
+        // Fetch more rows than needed so we can filter out resolvable ones
+        $fetchLimit = max(50, (int) $limit * 3);
         $sql = "SELECT path, COUNT(*) AS views, COUNT(DISTINCT visitor_hash) AS uniques
                 FROM `" . self::HITS_TABLE . "`
                 WHERE {$where['sql']}
                 GROUP BY path, path_hash
                 ORDER BY views DESC, uniques DESC
-                LIMIT " . (int) $limit;
+                LIMIT " . $fetchLimit;
         $stmt = $this->wire('database')->prepare($sql);
         $stmt->execute($where['params']);
         $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC) ?: [];
-        foreach($rows as &$row) {
+
+        $result = [];
+        foreach($rows as $row) {
             $row['path'] = $this->normalizePath((string) ($row['path'] ?? '/'));
+            // Hide paths that resolve through redirect modules
+            if($this->pathResolvesToValidPage($row['path'])) continue;
+            $result[] = $row;
+            if(count($result) >= (int) $limit) break;
         }
-        unset($row);
-        return $rows;
+        return $result;
     }
 
     public function getTopReferrers($days = 30, $limit = 10, array $filters = []) {
@@ -3508,8 +4584,195 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
     }
 
 
+    /**
+     * Returns info about the currently loaded matomo/device-detector and,
+     * if available (and cached), the latest released version on GitHub.
+     *
+     * Result keys:
+     *   - current        : version string in use (e.g. "6.4.2") or ''
+     *   - latest         : latest release tag from GitHub or ''
+     *   - latest_url     : release page URL or ''
+     *   - update_available : bool
+     *   - check_failed   : bool (true if we tried and couldn't reach GitHub)
+     *   - checked_at     : timestamp of last successful check
+     *
+     * The GitHub lookup is cached for 24h via WireCache to respect rate limits.
+     * Pass $forceRefresh=true to bypass the cache.
+     */
+    public function getDeviceDetectorVersionInfo($forceRefresh = false) {
+        $info = [
+            'current' => '',
+            'latest' => '',
+            'latest_url' => '',
+            'update_available' => false,
+            'check_failed' => false,
+            'checked_at' => 0,
+        ];
+
+        // Make sure the library is loaded so we can read its VERSION constant.
+        $this->getDeviceDetector('Mozilla/5.0');
+        if(defined('DeviceDetector\\DeviceDetector::VERSION')) {
+            $info['current'] = (string) \DeviceDetector\DeviceDetector::VERSION;
+        }
+
+        if($info['current'] === '') return $info;
+
+        $cacheKey = 'NativeAnalytics.dd_latest_version';
+        $cache = $this->wire('cache');
+        $cached = null;
+        if(!$forceRefresh && $cache) {
+            $cached = $cache->get($cacheKey);
+            if(is_array($cached) && isset($cached['latest'])) {
+                $info['latest'] = (string) $cached['latest'];
+                $info['latest_url'] = (string) ($cached['latest_url'] ?? '');
+                $info['checked_at'] = (int) ($cached['checked_at'] ?? 0);
+                $info['update_available'] = $this->versionGreaterThan($info['latest'], $info['current']);
+                return $info;
+            }
+        }
+
+        // Fetch from GitHub API
+        $latest = $this->fetchLatestDeviceDetectorRelease();
+        if($latest === null) {
+            $info['check_failed'] = true;
+            // Negative cache for 1 hour so we don't keep retrying on every page load.
+            if($cache) $cache->save($cacheKey, ['latest' => '', 'latest_url' => '', 'checked_at' => time(), 'failed' => true], 3600);
+            return $info;
+        }
+
+        $info['latest'] = $latest['tag'];
+        $info['latest_url'] = $latest['url'];
+        $info['checked_at'] = time();
+        $info['update_available'] = $this->versionGreaterThan($info['latest'], $info['current']);
+
+        // Cache for 24h
+        if($cache) {
+            $cache->save($cacheKey, [
+                'latest' => $info['latest'],
+                'latest_url' => $info['latest_url'],
+                'checked_at' => $info['checked_at'],
+                'failed' => false,
+            ], 86400);
+        }
+
+        return $info;
+    }
+
+    /**
+     * Fetches the latest released tag of matomo/device-detector from the GitHub API.
+     * Returns ['tag' => '6.4.3', 'url' => 'https://...'] or null on failure.
+     * Network errors, missing extensions and rate-limit responses all fall through
+     * as null — the caller treats this as "couldn't check, don't show anything".
+     */
+    protected function fetchLatestDeviceDetectorRelease() {
+        $url = 'https://api.github.com/repos/matomo-org/device-detector/releases/latest';
+        $body = null;
+
+        // 1) Prefer ProcessWire's WireHttp when available
+        if(class_exists('\\ProcessWire\\WireHttp')) {
+            try {
+                $http = $this->wire(new \ProcessWire\WireHttp());
+                $http->setHeader('Accept', 'application/vnd.github+json');
+                $http->setHeader('User-Agent', 'NativeAnalytics-ProcessWire-Module');
+                $resp = $http->get($url);
+                if(is_string($resp) && $resp !== '') $body = $resp;
+            } catch(\Throwable $e) {
+                $body = null;
+            }
+        }
+
+        // 2) Fallback: cURL directly
+        if($body === null && function_exists('curl_init')) {
+            try {
+                $ch = curl_init($url);
+                curl_setopt_array($ch, [
+                    CURLOPT_RETURNTRANSFER => true,
+                    CURLOPT_TIMEOUT => 5,
+                    CURLOPT_CONNECTTIMEOUT => 3,
+                    CURLOPT_USERAGENT => 'NativeAnalytics-ProcessWire-Module',
+                    CURLOPT_HTTPHEADER => ['Accept: application/vnd.github+json'],
+                    CURLOPT_FOLLOWLOCATION => true,
+                    CURLOPT_MAXREDIRS => 3,
+                    CURLOPT_SSL_VERIFYPEER => true,
+                ]);
+                $resp = curl_exec($ch);
+                $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                curl_close($ch);
+                if($status === 200 && is_string($resp) && $resp !== '') $body = $resp;
+            } catch(\Throwable $e) {
+                $body = null;
+            }
+        }
+
+        // 3) Last-resort: file_get_contents (only if allow_url_fopen)
+        if($body === null && function_exists('file_get_contents') && ini_get('allow_url_fopen')) {
+            try {
+                $ctx = stream_context_create([
+                    'http' => [
+                        'method' => 'GET',
+                        'header' => "User-Agent: NativeAnalytics-ProcessWire-Module\r\nAccept: application/vnd.github+json\r\n",
+                        'timeout' => 5,
+                        'ignore_errors' => true,
+                    ],
+                ]);
+                $resp = @file_get_contents($url, false, $ctx);
+                if(is_string($resp) && $resp !== '') $body = $resp;
+            } catch(\Throwable $e) {
+                $body = null;
+            }
+        }
+
+        if(!$body) return null;
+
+        $data = json_decode((string) $body, true);
+        if(!is_array($data) || empty($data['tag_name'])) return null;
+
+        return [
+            'tag' => (string) $data['tag_name'],
+            'url' => (string) ($data['html_url'] ?? 'https://github.com/matomo-org/device-detector/releases'),
+        ];
+    }
+
+    /**
+     * Simple semver-ish version comparison; returns true if $a > $b.
+     * Strips leading 'v', then defers to PHP's version_compare.
+     */
+    protected function versionGreaterThan($a, $b) {
+        $a = ltrim((string) $a, 'vV');
+        $b = ltrim((string) $b, 'vV');
+        if($a === '' || $b === '') return false;
+        return version_compare($a, $b, '>');
+    }
+
     protected function parseUserAgent($ua) {
         $ua = (string) $ua;
+
+        // Prefer matomo/device-detector when available — much more accurate
+        // browser/OS/device detection than the regex fallback below.
+        $detector = $this->getDeviceDetector($ua);
+        if($detector !== null) {
+            try {
+                $detector->parse();
+                $clientType = method_exists($detector, 'getClient') ? (string) $detector->getClient('type') : '';
+                if(!$detector->isBot() && $clientType !== 'library' && $clientType !== 'feed reader') {
+                    $client = $detector->getClient('name');
+                    $osName = $detector->getOs('name');
+                    $deviceTypeName = method_exists($detector, 'getDeviceName') ? (string) $detector->getDeviceName() : '';
+                    $browser = $client ? (string) $client : 'Other';
+                    $os = $osName ? (string) $osName : 'Other';
+                    $device = 'desktop';
+                    $dt = strtolower($deviceTypeName);
+                    if(in_array($dt, ['smartphone', 'phablet', 'feature phone'], true)) $device = 'mobile';
+                    elseif($dt === 'tablet') $device = 'tablet';
+                    elseif($dt === 'desktop') $device = 'desktop';
+                    elseif($dt === 'television' || $dt === 'smart display' || $dt === 'console') $device = 'tv';
+                    return ['browser' => $browser, 'os' => $os, 'device_type' => $device];
+                }
+            } catch(\Throwable $e) {
+                // fall through to regex
+            }
+        }
+
         $browser = 'Other';
         $os = 'Other';
         $device = 'desktop';
@@ -3519,13 +4782,13 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
 
         foreach([
             'Edge' => '/edg/i',
+            'Opera' => '/opera|opr\//i',
             'Chrome' => '/chrome|crios/i',
             'Firefox' => '/firefox|fxios/i',
             'Safari' => '/safari/i',
-            'Opera' => '/opera|opr\//i',
         ] as $label => $regex) {
             if(!preg_match($regex, $ua)) continue;
-            if($label === 'Safari' && preg_match('/chrome|crios|android|edg/i', $ua)) continue;
+            if($label === 'Safari' && preg_match('/chrome|crios|android|edg|opr\//i', $ua)) continue;
             $browser = $label;
             break;
         }
@@ -3546,9 +4809,132 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         return ['browser' => $browser, 'os' => $os, 'device_type' => $device];
     }
 
+    /**
+     * Detect bot user-agents.
+     *
+     * Strategy:
+     *  1. If matomo/device-detector is available (Composer or manually placed in
+     *     /site/modules/NativeAnalytics/vendor/), use its Bot class — thousands of
+     *     up-to-date patterns maintained by the Matomo team.
+     *  2. Otherwise fall back to a broad regex that covers generic markers,
+     *     scripting libraries, social previewers, AI/LLM scrapers, SEO crawlers,
+     *     search engine bots, uptime monitors and common scanners.
+     *
+     * Results are statically cached per UA per request to avoid repeated work.
+     */
     protected function isBotUserAgent($ua) {
         if(!$ua) return false;
-        return (bool) preg_match('/bot|crawl|spider|slurp|facebookexternalhit|preview|headless|python-requests|wget|curl/i', $ua);
+
+        static $cache = [];
+        if(isset($cache[$ua])) return $cache[$ua];
+
+        // 1) matomo/device-detector if available
+        $detector = $this->getDeviceDetector($ua);
+        if($detector !== null) {
+            try {
+                $detector->parse();
+                if(method_exists($detector, 'isBot') && $detector->isBot()) {
+                    return $cache[$ua] = true;
+                }
+                // matomo classifies tools like curl, wget, python-requests, GuzzleHttp,
+                // libwww-perl, Java HTTP client etc. as "library" (a client type, not a bot).
+                // For analytics purposes these are non-human traffic and should be filtered.
+                $clientType = method_exists($detector, 'getClient') ? (string) $detector->getClient('type') : '';
+                if($clientType === 'library' || $clientType === 'feed reader') {
+                    return $cache[$ua] = true;
+                }
+            } catch(\Throwable $e) {
+                // fall through to regex
+            }
+        }
+
+        // 2) Regex fallback (broad, 2026 updated)
+        $pattern = '/'
+            // Generic markers
+            . 'bot\b|crawl|spider|slurp|fetch(?!er-cit)|preview|headless|monitor|scanner|archiver|indexer|validator|checker|analyzer|inspector|harvester|extractor|parser\b'
+            // Tooling / scripts / HTTP libraries
+            . '|python-requests|python-urllib|python/[\d\.]+|aiohttp|httpx|node-fetch|undici|got/[\d\.]+|axios|guzzlehttp|reqwest|okhttp|libwww-perl|java/[\d\.]+|apache-httpclient'
+            . '|wget|curl|go-http-client|ruby|scrapy|phantomjs|selenium|puppeteer|playwright|chrome-lighthouse|httrack|wkhtmltopdf|katana|colly|crawlee|nutch'
+            // Social previewers
+            . '|facebookexternalhit|facebot|twitterbot|linkedinbot|whatsapp|telegrambot|slackbot|discordbot|skypeuripreview|embedly|tumblr|pinterest|vkshare|redditbot|mastodon|threads\b|bluesky'
+            // AI / LLM scrapers (2025-2026 updated)
+            . '|gptbot|chatgpt-user|oai-searchbot|searchgpt|claudebot|claude-web|anthropic-ai|perplexitybot|perplexity-user|youbot|cohere-ai|cohere-training-data-crawler'
+            . '|bytespider|amazonbot|applebot(?:-extended)?|googleother|google-extended|meta-externalagent|meta-externalfetcher|diffbot|ccbot|kagibot|mistralai-user|deepseekbot|qwantbot'
+            . '|ai2bot|datalbench|panscient|webzio|webz\.io|omgilibot|omgili|trendkite|peer39|magpie-crawler|netestate|tineye|webcopier|imagesift|brightedge|websparker'
+            // SEO crawlers
+            . '|ahrefsbot|semrushbot|mj12bot|dotbot|rogerbot|exabot|seznambot|petalbot|barkrowler|serpstatbot|sogou|opensiteexplorer|linkdexbot|gigabot|ia_archiver|screaming\s?frog|sitebulb|oncrawl|botify|sitechecker|coccocbot|moatbot'
+            // Search engine bots
+            . '|googlebot|adsbot-google|mediapartners-google|bingbot|adidxbot|duckduckbot|yandex(?:bot|images)|baiduspider|naverbot|yeti|sogou|360spider|so\.com'
+            // Uptime / monitoring / synthetics
+            . '|uptimerobot|pingdom|statuscake|gtmetrix|newrelicpinger|datadogsynthetics|site24x7|hetrix|better\s?uptime|jetmon|monitisbot|cloudwatchsynthetics|pulsepoint|prtg|catchpoint'
+            // Security scanners / misc / probes
+            . '|masscan|nmap|nikto|zgrab|netcraft|qwantify|mojeekbot|duckduckgo-favicons-bot|wpscan|sqlmap|acunetix|nessus|qualys|burp\s?suite|w3af|netsparker'
+            // Headless / automated-browser signatures sometimes used as full UA
+            . '|headlesschrome|chrome-headless|jsdom|axe-core|google\s?page\s?speed|lighthouse|pagespeed|search\s?console|chrome-privacy-preserving-prefetch'
+            . '/i';
+
+        return $cache[$ua] = (bool) preg_match($pattern, $ua);
+    }
+
+    /**
+     * Return a matomo/device-detector DeviceDetector instance for the given UA,
+     * or null if the library cannot be loaded at all.
+     *
+     * Library resolution order:
+     *   1. matomo/device-detector already loaded (some other module / autoloader)
+     *   2. Site-wide Composer autoloader  (/site/vendor/ or project root /vendor/)
+     *   3. Bundled copy under /site/modules/NativeAnalytics/lib/
+     *
+     * The first source that successfully exposes the class wins. Result is
+     * cached per UA per request.
+     */
+    protected function getDeviceDetector($ua) {
+        static $autoloaded = null;
+        static $available = null;
+        static $cache = [];
+
+        if(isset($cache[$ua])) return $cache[$ua];
+
+        if($autoloaded === null) {
+            $autoloaded = true;
+
+            // 1) Already loaded?
+            if(!class_exists('DeviceDetector\\DeviceDetector')) {
+                // 2) Site-wide Composer autoloader (preferred — gets bug fixes via composer update)
+                $composerCandidates = [
+                    $this->wire('config')->paths->site . 'vendor/autoload.php',
+                    $this->wire('config')->paths->root . 'vendor/autoload.php',
+                ];
+                foreach($composerCandidates as $path) {
+                    if(is_file($path)) {
+                        try { require_once $path; } catch(\Throwable $e) {}
+                        if(class_exists('DeviceDetector\\DeviceDetector')) break;
+                    }
+                }
+            }
+
+            // 3) Bundled fallback shipped with the module
+            if(!class_exists('DeviceDetector\\DeviceDetector')) {
+                $bundled = __DIR__ . '/lib/bootstrap.php';
+                if(is_file($bundled)) {
+                    try { require_once $bundled; } catch(\Throwable $e) {}
+                }
+            }
+
+            $available = class_exists('DeviceDetector\\DeviceDetector');
+        }
+
+        if(!$available) return $cache[$ua] = null;
+
+        try {
+            $dd = new \DeviceDetector\DeviceDetector($ua);
+            if(method_exists($dd, 'skipBotDetection')) {
+                $dd->skipBotDetection(false);
+            }
+            return $cache[$ua] = $dd;
+        } catch(\Throwable $e) {
+            return $cache[$ua] = null;
+        }
     }
 
     protected function getClientIp() {

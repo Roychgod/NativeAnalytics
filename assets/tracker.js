@@ -124,6 +124,9 @@
 
   window.PWNA.trackPageview = function () {
     if (pageviewTracked) return;
+    // Only mark as tracked if we can actually send (consent given, DNT off, endpoint set).
+    // Otherwise we'd "burn" the pageview and lose it forever if consent is granted later.
+    if (!canTrack()) return;
     pageviewTracked = true;
     sendPayload({
       type: 'pageview',

@@ -6,7 +6,7 @@ class ProcessNativeAnalytics extends Process {
         return [
             'title' => 'NativeAnalytics Dashboard',
             'summary' => 'Dashboard for the NativeAnalytics module.',
-            'version' => 1023,
+            'version' => 1024,
             'author' => 'Pyxios - Roych (www.pyxios.com)',
             'permission' => 'nativeanalytics-view',
             'icon' => 'area-chart',
@@ -670,6 +670,44 @@ startxref
         if($action === 'purge_realtime') {
             $analytics->purgeOldRealtimeSessions();
             $this->message('Old realtime sessions purged.');
+        }
+        if($action === 'cleanup_404s') {
+            $removed = $analytics->cleanupResolvable404s();
+            if($removed > 0) {
+                $this->message("Cleaned up {$removed} resolvable 404 record(s) — these paths now redirect to valid pages.");
+            } else {
+                $this->message('No resolvable 404 records found.');
+            }
+        }
+        if($action === 'cleanup_suspicious') {
+            $removed = $analytics->cleanupSuspiciousPaths();
+            if($removed > 0) {
+                $this->message("Cleaned up {$removed} suspicious probe record(s) from analytics data.");
+            } else {
+                $this->message('No suspicious probe records found.');
+            }
+        }
+        if($action === 'block_ip') {
+            $ipHash = trim((string) $this->input->post('ip_hash'));
+            if($ipHash !== '' && preg_match('/^[a-f0-9]{40,128}$/i', $ipHash)) {
+                $analytics->addIpToBlocklist('hash:' . $ipHash);
+                // Also remove this visitor's data from live sessions so they disappear immediately.
+                // The sessions table doesn't store ip_hash, so we bridge through hits via visitor_hash.
+                try {
+                    $db = $this->wire('database');
+                    $vstmt = $db->prepare("SELECT DISTINCT visitor_hash FROM `pwna_hits` WHERE ip_hash = :h");
+                    $vstmt->execute([':h' => $ipHash]);
+                    $visitors = $vstmt->fetchAll(\PDO::FETCH_COLUMN) ?: [];
+                    if($visitors) {
+                        $ph = implode(',', array_fill(0, count($visitors), '?'));
+                        $del = $db->prepare("DELETE FROM `pwna_sessions` WHERE visitor_hash IN ({$ph})");
+                        $del->execute($visitors);
+                    }
+                } catch(\Throwable $e) {}
+                $this->message('IP blocked. This visitor will no longer be tracked.');
+            } else {
+                $this->error('Invalid IP hash.');
+            }
         }
         if($action === 'reset_analytics_data') {
             $analytics->resetAnalyticsData();
@@ -1639,6 +1677,14 @@ protected function renderHelpIcon($text, $label = 'Help', $extraClass = '') {
                 'label' => 'Purge old realtime sessions',
                 'help' => 'Removes stale current-visitor rows that are older than the realtime visitor window.',
             ],
+            'cleanup_404s' => [
+                'label' => 'Cleanup resolvable 404s',
+                'help' => 'Removes 404 hits whose paths now resolve to a valid page via PagePathHistory, ProcessRedirects or Jumplinks. Useful after renaming pages or adding redirects.',
+            ],
+            'cleanup_suspicious' => [
+                'label' => 'Cleanup suspicious probes',
+                'help' => 'Removes tracked hits whose paths match the suspicious-path patterns from the module config (e.g. /wp-admin, /.env, /xmlrpc.php). Useful for cleaning out probe attempts logged before the filter was configured.',
+            ],
         ];
         $out = '<div class="pwna-panel"><h2>Maintenance</h2><div class="pwna-actions">';
         foreach($actions as $value => $item) {
@@ -1689,23 +1735,74 @@ protected function renderHelpIcon($text, $label = 'Help', $extraClass = '') {
             $out .= '<div id="pwna-current-body"><p class="pwna-empty">No active visitors right now.</p></div></div>';
             return $out;
         }
+        $canBlock = $this->user->hasPermission('nativeanalytics-manage');
+        $csrfName = $this->session->CSRF->getTokenName();
+        $csrfValue = $this->session->CSRF->getTokenValue();
+
+        // The sessions table does not store ip_hash (only visitor_hash). To still
+        // offer the "Block" action we resolve each visitor_hash to its most recent
+        // ip_hash from the hits table in a single bulk query.
+        $visitorIpMap = [];
+        if($canBlock) {
+            $visitorHashes = [];
+            foreach($rows as $row) {
+                if(!empty($row['visitor_hash'])) $visitorHashes[(string) $row['visitor_hash']] = true;
+            }
+            $visitorHashes = array_keys($visitorHashes);
+            if($visitorHashes) {
+                try {
+                    $db = $this->wire('database');
+                    $placeholders = implode(',', array_fill(0, count($visitorHashes), '?'));
+                    $stmt = $db->prepare("SELECT visitor_hash, ip_hash
+                                          FROM `pwna_hits`
+                                          WHERE visitor_hash IN ({$placeholders})
+                                            AND ip_hash <> ''
+                                          ORDER BY created_at DESC");
+                    $stmt->execute($visitorHashes);
+                    while($r = $stmt->fetch(\PDO::FETCH_ASSOC)) {
+                        $vh = (string) $r['visitor_hash'];
+                        if(!isset($visitorIpMap[$vh])) $visitorIpMap[$vh] = (string) $r['ip_hash'];
+                    }
+                } catch(\Throwable $e) {
+                    // ignore - Block buttons just won't render
+                }
+            }
+        }
+
         $mapped = [];
         foreach($rows as $row) {
             $pageLabel = $this->sanitizer->entities($row['current_path']);
             if(!empty($row['page_title'])) {
-                $pageLabel = '<strong>' . $this->sanitizer->entities(strip_tags((string) $row['page_title'])) . '</strong><br><span class="pwna-muted">' . $this->sanitizer->entities((string) $row['current_path']) . '</span>'; 
+                $pageLabel = '<strong>' . $this->sanitizer->entities(strip_tags((string) $row['page_title'])) . '</strong><br><span class="pwna-muted">' . $this->sanitizer->entities((string) $row['current_path']) . '</span>';
             }
             if((int) ($row['status_code'] ?? 200) === 404) {
                 $pageLabel .= '<br><span class="pwna-badge">404</span>';
+            }
+            // Block IP button (only for users with manage permission, only if we have an ip_hash)
+            $actionCell = '';
+            $rowIpHash = '';
+            if(!empty($row['visitor_hash']) && isset($visitorIpMap[(string) $row['visitor_hash']])) {
+                $rowIpHash = $visitorIpMap[(string) $row['visitor_hash']];
+            }
+            if($canBlock && $rowIpHash !== '') {
+                $hashShort = substr($rowIpHash, 0, 12);
+                $actionCell = '<form method="post" style="display:inline" onsubmit="return confirm(\'Block this IP from future tracking? This will silently drop all requests from this visitor.\');">'
+                    . '<input type="hidden" name="' . $this->sanitizer->entities($csrfName) . '" value="' . $this->sanitizer->entities($csrfValue) . '">'
+                    . '<input type="hidden" name="pwna_action" value="block_ip">'
+                    . '<input type="hidden" name="ip_hash" value="' . $this->sanitizer->entities($rowIpHash) . '">'
+                    . '<button type="submit" class="pwna-secondary-btn" title="Block this visitor IP (hash: ' . $this->sanitizer->entities($hashShort) . '…)" style="padding:2px 8px;font-size:11px;">Block</button>'
+                    . '</form>';
             }
             $mapped[] = [
                 $pageLabel,
                 $this->sanitizer->entities((string) $row['device_type']),
                 $this->sanitizer->entities((string) $row['browser']),
                 $this->sanitizer->entities($this->formatDateTime($analytics, $row['last_seen_at'])),
+                $actionCell,
             ];
         }
-        $out .= '<div id="pwna-current-body">' . $this->renderSimpleTableBodyOnly(['Page', 'Device', 'Browser', 'Last seen'], $mapped) . '</div>';
+        $headers = ['Page', 'Device', 'Browser', 'Last seen', $canBlock ? 'Action' : ''];
+        $out .= '<div id="pwna-current-body">' . $this->renderSimpleTableBodyOnly($headers, $mapped) . '</div>';
         $out .= '</div>';
         return $out;
     }

@@ -1,31 +1,40 @@
-NativeAnalytics 1.0.23
+NativeAnalytics 1.0.24
 
 # NativeAnalytics
 
 Native first-party analytics module for ProcessWire CMS. It tracks traffic and engagement directly inside ProcessWire, without Google Analytics or external APIs.
 
-## Features in v1.0.23
+## Features in v1.0.24
 
-- Page views, unique visitors and sessions
-- Current visitors based on active sessions
-- Top pages, landing pages and exit pages
-- Referrers, UTM campaigns, browser/device/OS breakdowns
-- Internal search-term tracking via query parameters (`q`, `s`, `search` by default)
-- 404 hit reporting for missing URLs
+NativeAnalytics is a first-party analytics dashboard for ProcessWire. It keeps the tracking data inside your ProcessWire installation and does not rely on Google Analytics, external tracking scripts or remote analytics APIs.
+
+Main features currently included:
+
+- Page views, unique visitors, sessions and current visitors
+- Top pages, landing pages, exit pages, referrers and UTM campaign reporting
+- Browser, device and operating-system breakdowns
+- Internal search-term tracking via configurable query parameters (`q`, `s`, `search` by default)
+- Smarter 404 reporting with support for redirect/history modules, so renamed pages and redirected URLs do not stay listed as real 404s
+- Improved bot and crawler filtering, including AI crawlers, SEO bots, social preview bots, uptime monitors and common HTTP libraries
+- Optional Matomo `device-detector` support with automatic Composer detection and bundled fallback
+- Suspicious probe detection for common scanner URLs, CMS/admin probes, `.env`, `.git`, config leaks, shell upload attempts and similar noise
+- Optional custom URL/path filter for site-specific tracking exclusions
+- Maintenance tools for data cleanup, including **Cleanup resolvable 404s** and **Cleanup suspicious probes**
+- IP blocklist support and quick blocking from the Current visitors panel
 - Overview, Engagement, Goals, Compare, Sources and System tabs
 - Compare mode for previous period and same period last year
-- CSV, PDF and DOCX exports
 - Event tracking for forms, downloads, contact links, outbound links and custom CTA events
 - Goal tracking with event-based and page/path-based goals
 - Conversion rates based on sessions or unique visitors
 - Event and goal daily aggregates for high-traffic retention workflows
 - Tracking helper with copy-ready snippets and a mini snippet generator
 - Per-page mini analytics box inside `ProcessPageEdit`
-- Daily aggregate rebuild helpers and data cleanup tools
-- Server-side pageview tracking with optional event JS tracking, bot filtering and optional consent cookie gate
-- Cookie-less visitor/session storage mode for EU sites
-- PrivacyWire localStorage consent helper
+- CSV, PDF and DOCX exports
 - Optional monthly email reports with configurable recipients, report sections and PDF attachment
+- Server-side pageview tracking with optional event JS tracking, bot filtering and optional consent cookie gate
+- Cookie-less visitor/session storage mode for EU/privacy-focused sites
+- PrivacyWire localStorage consent helper
+- Cleaner, grouped module settings with collapsible sections for tracking, filters, bot detection, privacy/consent, retention, reports and advanced options
 
 ## Installation
 
@@ -187,3 +196,24 @@ This release is renamed to **NativeAnalytics** and is intended as a fresh instal
 - Added `.pwna-app` wrapper around the dashboard output for cleaner CSS scoping.
 - Refactored ~175 hardcoded color values in `admin.css` to CSS custom properties.
 - Updated module version metadata to `1.0.23` / integer `1023` for both NativeAnalytics and the dashboard process module.
+
+## 1.0.24 notes
+
+This release mainly focuses on cleaner analytics data, better bot/noise filtering and a more understandable configuration screen.
+
+- Added smarter 404 handling. NativeAnalytics now checks whether a requested path can be resolved by redirect/history modules before treating it as a real 404.
+- Added support for common redirect/history modules: PagePathHistory, ProcessRedirects and Jumplinks.
+- The 404 pages section now excludes paths that already resolve through one of these modules, so renamed pages and valid redirects no longer stay listed as broken URLs.
+- Added the **Cleanup resolvable 404s** maintenance action. This can retroactively remove old 404 records whose URLs now resolve correctly through redirects.
+- Expanded bot and crawler detection for modern AI crawlers, SEO bots, social previewers, uptime monitors, common HTTP libraries and automated requests.
+- Added optional Matomo `device-detector` support for more reliable bot/device detection.
+- NativeAnalytics first checks for a site-wide Composer installation of Matomo Device Detector and then falls back to the bundled library included with the module.
+- Added a clearer bot-detection status in module settings, including which detector source is being used and whether the bundled library appears available.
+- Added suspicious probe detection for common scanner URLs, including WordPress/Joomla/Drupal/Magento/admin/login probes, `.env`, `.git`, config files, shell upload attempts, path traversal attempts and similar noise.
+- Added the **Cleanup suspicious probes** maintenance action for removing already-recorded scanner/probe hits from the analytics database.
+- Added an optional custom URL/path filter for project-specific exclusions. This is useful when a site has its own noisy paths or patterns that should not be tracked.
+- Added IP blocklist support and a **Block this IP** action in the Current visitors panel.
+- Improved realtime/current visitor filtering so likely bots, probes and blocked IPs are hidden from the live visitor view.
+- Reorganized the module settings screen into clearer grouped/collapsible sections for tracking, filters, bot detection, privacy/consent, retention, reports and advanced options.
+- Improved bundled library fallback handling and admin status messages around optional detection libraries.
+- Updated module version metadata to `1.0.24` / integer `1024` for both NativeAnalytics and the dashboard process module.

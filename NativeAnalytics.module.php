@@ -433,6 +433,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             `session_hash` CHAR(64) NOT NULL,
             `ip_hash` CHAR(64) NOT NULL,
             `is_bot` TINYINT(1) NOT NULL DEFAULT 0,
+            `bot_reason` VARCHAR(64) NOT NULL DEFAULT '',
             `status_code` SMALLINT UNSIGNED NOT NULL DEFAULT 200,
             PRIMARY KEY (`id`),
             KEY `created_at` (`created_at`),
@@ -444,7 +445,8 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             KEY `session_hash` (`session_hash`),
             KEY `referrer_host` (`referrer_host`),
             KEY `search_term` (`search_term`),
-            KEY `status_code` (`status_code`)
+            KEY `status_code` (`status_code`),
+            KEY `is_bot` (`is_bot`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
 
         $db->exec("CREATE TABLE IF NOT EXISTS `" . self::DAILY_TABLE . "` (
@@ -507,6 +509,8 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             `extra_json` MEDIUMTEXT NULL,
             `visitor_hash` CHAR(64) NOT NULL,
             `session_hash` CHAR(64) NOT NULL,
+            `is_bot` TINYINT(1) NOT NULL DEFAULT 0,
+            `bot_reason` VARCHAR(64) NOT NULL DEFAULT '',
             PRIMARY KEY (`id`),
             KEY `created_at` (`created_at`),
             KEY `created_date` (`created_date`),
@@ -516,7 +520,8 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             KEY `event_group` (`event_group`),
             KEY `event_name` (`event_name`),
             KEY `visitor_hash` (`visitor_hash`),
-            KEY `session_hash` (`session_hash`)
+            KEY `session_hash` (`session_hash`),
+            KEY `is_bot` (`is_bot`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
 
         $db->exec("CREATE TABLE IF NOT EXISTS `" . self::EVENT_DAILY_TABLE . "` (
@@ -574,10 +579,12 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $this->ensureIndex(self::HITS_TABLE, 'created_template', '`created_at`, `template`');
         $this->ensureIndex(self::HITS_TABLE, 'created_path', '`created_at`, `path_hash`');
         $this->ensureIndex(self::HITS_TABLE, 'created_session', '`created_at`, `session_hash`');
+        $this->ensureIndex(self::HITS_TABLE, 'is_bot', '`is_bot`');
         $this->ensureIndex(self::EVENTS_TABLE, 'created_group_name', '`created_at`, `event_group`, `event_name`');
         $this->ensureIndex(self::EVENTS_TABLE, 'created_page', '`created_at`, `page_id`');
         $this->ensureIndex(self::EVENTS_TABLE, 'created_template', '`created_at`, `template`');
         $this->ensureIndex(self::EVENTS_TABLE, 'created_session', '`created_at`, `session_hash`');
+        $this->ensureIndex(self::EVENTS_TABLE, 'is_bot', '`is_bot`');
 
         $done = true;
     }
@@ -612,7 +619,8 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
                 'session_hash' => "`session_hash` CHAR(64) NOT NULL DEFAULT '' AFTER `visitor_hash`",
                 'ip_hash' => "`ip_hash` CHAR(64) NOT NULL DEFAULT '' AFTER `session_hash`",
                 'is_bot' => "`is_bot` TINYINT(1) NOT NULL DEFAULT 0 AFTER `ip_hash`",
-                'status_code' => "`status_code` SMALLINT UNSIGNED NOT NULL DEFAULT 200 AFTER `is_bot`",
+                'bot_reason' => "`bot_reason` VARCHAR(64) NOT NULL DEFAULT '' AFTER `is_bot`",
+                'status_code' => "`status_code` SMALLINT UNSIGNED NOT NULL DEFAULT 200 AFTER `bot_reason`",
             ],
             self::DAILY_TABLE => [
                 'page_title' => "`page_title` VARCHAR(255) NOT NULL DEFAULT '' AFTER `page_id`",
@@ -657,6 +665,8 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
                 'extra_json' => "`extra_json` MEDIUMTEXT NULL AFTER `event_target`",
                 'visitor_hash' => "`visitor_hash` CHAR(64) NOT NULL DEFAULT '' AFTER `extra_json`",
                 'session_hash' => "`session_hash` CHAR(64) NOT NULL DEFAULT '' AFTER `visitor_hash`",
+                'is_bot' => "`is_bot` TINYINT(1) NOT NULL DEFAULT 0 AFTER `session_hash`",
+                'bot_reason' => "`bot_reason` VARCHAR(64) NOT NULL DEFAULT '' AFTER `is_bot`",
             ],
             self::EVENT_DAILY_TABLE => [
                 'page_id' => "`page_id` INT UNSIGNED NOT NULL DEFAULT 0 AFTER `day`",
@@ -2573,11 +2583,151 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
     }
 
     public function handleHourlyCron() {
+        // Mark behavioral bots BEFORE rebuilding daily aggregates so the
+        // aggregates reflect the post-filter view.
+        $this->markBehavioralBots();
         $day = date('Y-m-d');
         $this->rebuildDailyAggregate($day);
         $this->rebuildEventDailyAggregate($day);
         $this->rebuildGoalDailyAggregate($day);
         $this->purgeOldRealtimeSessions();
+    }
+
+    /**
+     * Post-hoc behavioral bot classification.
+     *
+     * Identifies sessions matching bot patterns and marks them is_bot = 1
+     * (with a short bot_reason tag for forensics). Rows stay in the table —
+     * they're just excluded from analytics queries by buildWhere() filtering
+     * on is_bot = 0.
+     *
+     * Pattern-based rather than UA-based, so it catches headless-browser
+     * scrapers and rotating-residential-proxy fleets that defeat UA regex
+     * matching. The three rules below were tuned against real data from
+     * helptexts.com (May 2026) where Chrome/104, Chrome/109, and Chrome/142
+     * fleets each produced 240-336 sessions / few minutes / many IPs /
+     * identical UA / 0 referrer / 1 hit per session.
+     *
+     * Idempotent: re-running doesn't re-flag already-flagged rows.
+     *
+     * @param int $lookbackHours How far back to evaluate (default 24).
+     *                           Pass a larger value for one-time backfills.
+     * @return array Per-rule row counts flagged this run.
+     */
+    public function markBehavioralBots($lookbackHours = 24) {
+        $lookbackHours = max(1, (int) $lookbackHours);
+        $db = $this->wire('database');
+        $stats = ['ua_fleet' => 0, 'ip_excessive' => 0, 'events_propagated' => 0];
+
+        // ---- Rule 1: UA-fleet detection ----------------------------------------
+        // Same UA produces many single-hit, no-referrer sessions across multiple
+        // IPs, clustered in time. Catches rotating-residential-proxy scrapers.
+        // Thresholds: 20+ sessions, 5+ distinct IPs, within a 240-minute (4h)
+        // window. Wider than strict-burst because bot operators commonly run
+        // 2-3 bursts per day spread across hours. Per-session safety: only flag
+        // sessions that themselves match the bot pattern (single-hit + no-ref);
+        // multi-hit or referrered sessions with the same UA stay counted.
+        try {
+            $sql = "
+                UPDATE `" . self::HITS_TABLE . "` h
+                INNER JOIN (
+                    SELECT user_agent
+                    FROM (
+                        SELECT session_hash, user_agent, ip_hash,
+                               COUNT(*) AS hits,
+                               MAX(referrer_host = '') AS no_ref,
+                               MIN(created_at) AS started
+                        FROM `" . self::HITS_TABLE . "`
+                        WHERE created_at >= DATE_SUB(NOW(), INTERVAL :lookback HOUR)
+                          AND is_bot = 0
+                          AND user_agent <> ''
+                        GROUP BY session_hash, user_agent, ip_hash
+                    ) sessions
+                    WHERE hits = 1 AND no_ref = 1
+                    GROUP BY user_agent
+                    HAVING COUNT(*) >= 20
+                       AND COUNT(DISTINCT ip_hash) >= 5
+                       AND TIMESTAMPDIFF(MINUTE, MIN(started), MAX(started)) <= 240
+                ) bot_uas ON bot_uas.user_agent = h.user_agent
+                INNER JOIN (
+                    SELECT session_hash
+                    FROM `" . self::HITS_TABLE . "`
+                    WHERE created_at >= DATE_SUB(NOW(), INTERVAL :lookback2 HOUR)
+                      AND is_bot = 0
+                    GROUP BY session_hash
+                    HAVING COUNT(*) = 1 AND MAX(referrer_host = '') = 1
+                ) bot_sessions ON bot_sessions.session_hash = h.session_hash
+                SET h.is_bot = 1, h.bot_reason = 'ua_fleet'
+                WHERE h.created_at >= DATE_SUB(NOW(), INTERVAL :lookback3 HOUR)
+                  AND h.is_bot = 0
+            ";
+            $stmt = $db->prepare($sql);
+            $stmt->execute([':lookback' => $lookbackHours, ':lookback2' => $lookbackHours, ':lookback3' => $lookbackHours]);
+            $stats['ua_fleet'] = $stmt->rowCount();
+        } catch(\Throwable $e) {
+            $this->wire('log')->save('native-analytics', 'markBehavioralBots ua_fleet failed: ' . $e->getMessage());
+        }
+
+        // ---- Rule 2: Same-IP excessive sessions --------------------------------
+        // One IP creates 30+ single-hit, no-referrer sessions in an hour.
+        // Catches naive scrapers that don't bother rotating IPs.
+        try {
+            $sql = "
+                UPDATE `" . self::HITS_TABLE . "` h
+                INNER JOIN (
+                    SELECT ip_hash
+                    FROM (
+                        SELECT session_hash, ip_hash, COUNT(*) AS hits,
+                               MAX(referrer_host = '') AS no_ref
+                        FROM `" . self::HITS_TABLE . "`
+                        WHERE created_at >= DATE_SUB(NOW(), INTERVAL 1 HOUR)
+                          AND is_bot = 0
+                          AND ip_hash <> ''
+                        GROUP BY session_hash, ip_hash
+                    ) sessions
+                    WHERE hits = 1 AND no_ref = 1
+                    GROUP BY ip_hash
+                    HAVING COUNT(*) >= 30
+                ) bot_ips ON bot_ips.ip_hash = h.ip_hash
+                SET h.is_bot = 1, h.bot_reason = 'ip_excessive'
+                WHERE h.created_at >= DATE_SUB(NOW(), INTERVAL 1 HOUR)
+                  AND h.is_bot = 0
+            ";
+            $stmt = $db->prepare($sql);
+            $stmt->execute();
+            $stats['ip_excessive'] = $stmt->rowCount();
+        } catch(\Throwable $e) {
+            $this->wire('log')->save('native-analytics', 'markBehavioralBots ip_excessive failed: ' . $e->getMessage());
+        }
+
+        // ---- Propagate flag to pwna_events for matching session_hashes ---------
+        // Events from a flagged session should also be excluded from analytics.
+        try {
+            $sql = "
+                UPDATE `" . self::EVENTS_TABLE . "` e
+                INNER JOIN (
+                    SELECT DISTINCT session_hash, MIN(bot_reason) AS bot_reason
+                    FROM `" . self::HITS_TABLE . "`
+                    WHERE is_bot = 1
+                      AND created_at >= DATE_SUB(NOW(), INTERVAL :lookback HOUR)
+                    GROUP BY session_hash
+                ) bot_sessions ON bot_sessions.session_hash = e.session_hash
+                SET e.is_bot = 1, e.bot_reason = bot_sessions.bot_reason
+                WHERE e.is_bot = 0
+                  AND e.created_at >= DATE_SUB(NOW(), INTERVAL :lookback2 HOUR)
+            ";
+            $stmt = $db->prepare($sql);
+            $stmt->execute([':lookback' => $lookbackHours, ':lookback2' => $lookbackHours]);
+            $stats['events_propagated'] = $stmt->rowCount();
+        } catch(\Throwable $e) {
+            $this->wire('log')->save('native-analytics', 'markBehavioralBots events propagation failed: ' . $e->getMessage());
+        }
+
+        if(array_sum($stats) > 0) {
+            $this->wire('log')->save('native-analytics',
+                'Behavioral bot filter flagged: ' . json_encode($stats));
+        }
+        return $stats;
     }
 
     public function rebuildDailyAggregate($day) {
@@ -2593,7 +2743,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             SELECT :day, `page_id`, MAX(`page_title`), `template`, `path`, `path_hash`,
                    COUNT(*), COUNT(DISTINCT `visitor_hash`), COUNT(DISTINCT `session_hash`)
             FROM `" . self::HITS_TABLE . "`
-            WHERE `created_at` >= :start AND `created_at` < :end
+            WHERE `created_at` >= :start AND `created_at` < :end AND `is_bot` = 0
             GROUP BY `page_id`, `template`, `path`, `path_hash`";
         $stmt = $db->prepare($sql);
         $stmt->execute([':day' => $day, ':start' => $day . ' 00:00:00', ':end' => $nextDay . ' 00:00:00']);
@@ -2612,7 +2762,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             SELECT :day, `page_id`, `template`, `event_group`, `event_name`, `event_label`, MD5(`event_label`), `event_target`, MD5(`event_target`),
                    COUNT(*), COUNT(DISTINCT `visitor_hash`), COUNT(DISTINCT `session_hash`)
             FROM `" . self::EVENTS_TABLE . "`
-            WHERE `created_at` >= :start AND `created_at` < :end
+            WHERE `created_at` >= :start AND `created_at` < :end AND `is_bot` = 0
             GROUP BY `page_id`, `template`, `event_group`, `event_name`, `event_label`, `event_target`";
         $stmt = $db->prepare($sql);
         $stmt->execute([':day' => $day, ':start' => $day . ' 00:00:00', ':end' => $nextDay . ' 00:00:00']);
@@ -3100,7 +3250,10 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
     }
 
     protected function buildWhere(array $filters, array $range, array $extra = []) {
+        // is_bot = 0 by default; pass $filters['include_bots'] = true to opt in
+        // (used e.g. by a "show bots" dashboard toggle if added later).
         $where = ['created_at >= :start', 'created_at <= :end'];
+        if(empty($filters['include_bots'])) $where[] = 'is_bot = 0';
         $params = [':start' => $range['start'], ':end' => $range['end']];
         if(!empty($filters['page_id'])) {
             $where[] = 'page_id = :page_id';
@@ -3116,6 +3269,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
 
     protected function buildEventWhere(array $filters, array $range, $group = '', array $extra = []) {
         $where = ['created_at >= :start', 'created_at <= :end'];
+        if(empty($filters['include_bots'])) $where[] = 'is_bot = 0';
         $params = [':start' => $range['start'], ':end' => $range['end']];
         if(!empty($filters['page_id'])) {
             $where[] = 'page_id = :page_id';

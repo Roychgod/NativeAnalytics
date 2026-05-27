@@ -4853,7 +4853,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             // Generic markers
             . 'bot\b|crawl|spider|slurp|fetch(?!er-cit)|preview|headless|monitor|scanner|archiver|indexer|validator|checker|analyzer|inspector|harvester|extractor|parser\b'
             // Tooling / scripts / HTTP libraries
-            . '|python-requests|python-urllib|python/[\d\.]+|aiohttp|httpx|node-fetch|undici|got/[\d\.]+|axios|guzzlehttp|reqwest|okhttp|libwww-perl|java/[\d\.]+|apache-httpclient'
+            . '|python-requests|python-urllib|python\/[\d\.]+|aiohttp|httpx|node-fetch|undici|got\/[\d\.]+|axios|guzzlehttp|reqwest|okhttp|libwww-perl|java\/[\d\.]+|apache-httpclient'
             . '|wget|curl|go-http-client|ruby|scrapy|phantomjs|selenium|puppeteer|playwright|chrome-lighthouse|httrack|wkhtmltopdf|katana|colly|crawlee|nutch'
             // Social previewers
             . '|facebookexternalhit|facebot|twitterbot|linkedinbot|whatsapp|telegrambot|slackbot|discordbot|skypeuripreview|embedly|tumblr|pinterest|vkshare|redditbot|mastodon|threads\b|bluesky'

@@ -51,6 +51,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         'botFleetMinIps' => 5,
         'botFleetWindowMinutes' => 240,
         'botIpMaxHitsPerHour' => 30,
+        'bot404ShowBots' => 1,
     ];
 
     public static function getModuleInfo() {
@@ -1385,6 +1386,16 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $f->description = 'Single-hit, no-referrer sessions from one IP in one hour before that IP is flagged.';
         $wrapper->add($f);
 
+        $f = $wire->modules->get('InputfieldCheckbox');
+        $f->name = 'bot404ShowBots';
+        $f->showIf = 'botFilterEnabled=1';
+        $f->label = '404 panel: include bot hits';
+        $f->label2 = 'Show flagged scanner activity in the 404 pages panel';
+        $f->icon = 'search';
+        $f->description = 'The 404 pages panel is where admins look to spot scanner probing (e.g. /admin, /.env, /wp-login.php). With this on, sessions flagged as bots — including the new scanner_404 rule that catches sessions whose only hit is a 404 — remain visible here even though they are excluded from every other analytics view. Turn off if you prefer a clean "real-user 404s only" view of broken internal links.';
+        if(!empty($data['bot404ShowBots'])) $f->attr('checked', 'checked');
+        $wrapper->add($f);
+
         // ------------------------------------------------------------------
         // Reorganize the flat field list into grouped, collapsible fieldsets
         // with two-column layouts where it helps reduce vertical scrolling.
@@ -2655,10 +2666,14 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
      *  - ua_fleet:     N+ single-hit/no-referrer sessions sharing one UA across
      *                  M+ distinct IPs within a time window (rotating proxies).
      *  - ip_excessive: K+ single-hit/no-referrer sessions from one IP in an hour.
+     *  - scanner_404:  any session whose only hit is a 404 (recon probing for
+     *                  /admin, /.env, etc.). No threshold — the session shape
+     *                  itself is the signal.
      *
      * Per-session safety: only sessions that themselves match the bot pattern
-     * (single-hit + no-referrer) are flagged, so a legitimate visitor on a
-     * stale browser version sharing a UA is not collateral damage.
+     * (single-hit + no-referrer, or single-hit + 404) are flagged, so a
+     * legitimate visitor on a stale browser version sharing a UA is not
+     * collateral damage.
      *
      * Originally contributed by adrianbj (PR #4). Thresholds are configurable
      * via module settings; the values passed here fall back to those defaults.
@@ -2677,7 +2692,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $uaWindow   = max(5, (int) $this->botFleetWindowMinutes);
         $ipHits     = max(2, (int) $this->botIpMaxHitsPerHour);
 
-        $result = ['ua_fleet' => 0, 'ip_excessive' => 0, 'events_propagated' => 0];
+        $result = ['ua_fleet' => 0, 'ip_excessive' => 0, 'scanner_404' => 0, 'events_propagated' => 0];
         $since = date('Y-m-d H:i:s', time() - ($lookbackHours * 3600));
 
         try {
@@ -2742,6 +2757,29 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
                 ':max_hits' => $ipHits,
             ]);
             $result['ip_excessive'] = (int) $stmt->rowCount();
+
+            // Rule 3: scanner_404 — a session whose only hit is a 404.
+            // Catches recon scanners probing for /admin, /.env, /wp-login.php,
+            // etc. — distinct IPs each hitting one missing path then leaving.
+            // No threshold to tune: the session pattern (exactly 1 hit AND
+            // status_code = 404) is itself the signal. Real users almost
+            // always have a second action after hitting a 404 (back button,
+            // retry, search) so they produce multi-hit sessions and stay
+            // unflagged.
+            $sql = "UPDATE `{$hits}` h
+                JOIN (
+                    SELECT `session_hash`
+                    FROM `{$hits}`
+                    WHERE `created_at` >= :since
+                      AND `is_bot` = 0
+                    GROUP BY `session_hash`
+                    HAVING COUNT(*) = 1 AND MIN(`status_code`) = 404
+                ) scanner ON scanner.`session_hash` = h.`session_hash`
+                SET h.`is_bot` = 1, h.`bot_reason` = 'scanner_404'
+                WHERE h.`is_bot` = 0 AND h.`created_at` >= :since2";
+            $stmt = $db->prepare($sql);
+            $stmt->execute([':since' => $since, ':since2' => $since]);
+            $result['scanner_404'] = (int) $stmt->rowCount();
 
             // Propagate the flag to events by session_hash.
             $sql = "UPDATE `{$events}` e
@@ -2860,7 +2898,12 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
     }
 
     public function get404Summary($days = 30) {
-        $where = $this->buildWhere([], $this->getDateRangeForDays($days), ["status_code = 404"]);
+        // The 404 panel is also the place admins look to see what scanners
+        // are probing for. By default include is_bot=1 rows here (otherwise
+        // recon activity vanishes); admins can flip the bot404ShowBots
+        // setting off if they prefer clean stats.
+        $filters = !empty($this->bot404ShowBots) ? ['include_bots' => true] : [];
+        $where = $this->buildWhere($filters, $this->getDateRangeForDays($days), ["status_code = 404"]);
         $sql = "SELECT COUNT(*) AS views, COUNT(DISTINCT visitor_hash) AS uniques FROM `" . self::HITS_TABLE . "` WHERE {$where['sql']}";
         $stmt = $this->wire('database')->prepare($sql);
         $stmt->execute($where['params']);
@@ -3098,7 +3141,8 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
     }
 
     public function getTop404Paths($days = 30, $limit = 15) {
-        $where = $this->buildWhere([], $this->getDateRangeForDays($days), ["status_code = 404"]);
+        $filters = !empty($this->bot404ShowBots) ? ['include_bots' => true] : [];
+        $where = $this->buildWhere($filters, $this->getDateRangeForDays($days), ["status_code = 404"]);
         // Fetch more rows than needed so we can filter out resolvable ones
         $fetchLimit = max(50, (int) $limit * 3);
         $sql = "SELECT path, COUNT(*) AS views, COUNT(DISTINCT visitor_hash) AS uniques

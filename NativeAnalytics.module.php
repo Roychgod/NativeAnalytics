@@ -2892,6 +2892,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC) ?: [];
 
         $result = [];
+        $seenVisitors = [];
         foreach($rows as $row) {
             $row = $this->normalizeAnalyticsRowForDisplay($row, 'current_path');
             // Hide bot sessions from the live "Current visitors" panel:
@@ -2909,6 +2910,19 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             if(!empty($row['current_path']) && $this->matchesBuiltInProbePattern($row['current_path'])) $isProbeSession = true;
 
             if($isProbeSession) continue;
+
+            // Collapse multiple sessions from the same visitor into one row. Rows are
+            // ordered by last_seen_at DESC, so the first kept row for a given
+            // visitor_hash is that visitor's most recent session (and current page);
+            // later rows for the same visitor only contribute their hit_count.
+            // Empty visitor_hash rows are not collapsed because they can't be matched.
+            $visitorKey = (string) ($row['visitor_hash'] ?? '');
+            if($visitorKey !== '' && isset($seenVisitors[$visitorKey])) {
+                $idx = $seenVisitors[$visitorKey];
+                $result[$idx]['hit_count'] = (int) $result[$idx]['hit_count'] + (int) ($row['hit_count'] ?? 0);
+                continue;
+            }
+            if($visitorKey !== '') $seenVisitors[$visitorKey] = count($result);
             $result[] = $row;
             if(count($result) >= (int) $limit) break;
         }

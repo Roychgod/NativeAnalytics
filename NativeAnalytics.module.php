@@ -51,7 +51,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         'botFleetMinIps' => 5,
         'botFleetWindowMinutes' => 240,
         'botIpMaxHitsPerHour' => 30,
-        'bot404ShowBots' => 1,
+        'bot404ShowBots' => 0,
     ];
 
     public static function getModuleInfo() {
@@ -1390,10 +1390,14 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $f->name = 'bot404ShowBots';
         $f->showIf = 'botFilterEnabled=1';
         $f->label = '404 panel: include bot hits';
-        $f->label2 = 'Show flagged scanner activity in the 404 pages panel';
+        $f->label2 = 'Surface flagged scanner activity in the 404 pages panel';
         $f->icon = 'search';
-        $f->description = 'The 404 pages panel is where admins look to spot scanner probing (e.g. /admin, /.env, /wp-login.php). With this on, sessions flagged as bots — including the new scanner_404 rule that catches sessions whose only hit is a 404 — remain visible here even though they are excluded from every other analytics view. Turn off if you prefer a clean "real-user 404s only" view of broken internal links.';
-        if(!empty($data['bot404ShowBots'])) $f->attr('checked', 'checked');
+        $f->description = 'Off by default — sessions flagged as bots (including the new scanner_404 rule that catches sessions whose only hit is a 404) are hidden from the 404 pages panel along with every other analytics view. Turn on if you want the 404 panel to show scanner probing (e.g. /admin, /.env, /wp-login.php) for security visibility.';
+        // Explicit fallback to the defaults entry so the checkbox state always
+        // tracks the actual default for fresh installs that haven't yet saved
+        // the module config.
+        $current = array_key_exists('bot404ShowBots', $data) ? $data['bot404ShowBots'] : 0;
+        if(!empty($current)) $f->attr('checked', 'checked');
         $wrapper->add($f);
 
         // ------------------------------------------------------------------

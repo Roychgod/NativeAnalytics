@@ -1179,13 +1179,15 @@ protected function renderWireTabsScript($activeTab, $engagementView) {
       setTimeout(bindNav, 320);
     }
 
-    // Capture final tab + storage state when the user navigates away.
-    // (The previous deferred syncMainTabState calls at 60ms/220ms were
-    // removed because they re-introduced the getActiveSlug-vs-DOM race
-    // tabsactivate is meant to avoid.)
-    $(window).on('pagehide beforeunload', function(){
-      syncMainTabState('#pwna-wiretabs', cfg, preferredSlug);
-    });
+    // Removed: the previous pagehide/beforeunload listener that called
+    // syncMainTabState. Its intent was to persist sessionStorage when the
+    // user navigates away, but tabsactivate + the click handler already
+    // write storage on every tab change, so by navigate-away time storage
+    // is up to date. The listener was actively harmful: jQuery UI tabs
+    // strips the .ui-tabs-active class during widget teardown, so
+    // getActiveSlug() returned empty and syncMainTabState fell through to
+    // 'overview', writing ?tab=overview to the URL bar just before the
+    // browser loaded the original URL — the flash visible on reload.
   });
 })(window.jQuery);
 </script>

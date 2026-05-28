@@ -1112,6 +1112,23 @@ protected function renderWireTabsScript($activeTab, $engagementView) {
 
     activateBySlug('#pwna-wiretabs', cfg, preferredSlug);
 
+    // Primary URL-sync trigger: jQuery UI tabs' tabsactivate event fires AFTER
+    // the new tab is fully active, with ui.newTab available directly. Avoids
+    // the race where a click-time setTimeout reads getActiveSlug() before
+    // WireTabs has swapped the .ui-tabs-active class — which used to make
+    // the URL stick on whatever tab was active before the click.
+    $('#pwna-wiretabs').on('tabsactivate', function(event, ui){
+      var label = (ui && ui.newTab && ui.newTab.length) ? ui.newTab.find('a').first().text() : '';
+      var slug = slugFromLabel(cfg, label);
+      if(!slug) return;
+      writeStored(cfg.storageKey, cfg.labels[slug] || label);
+      updateUrlParam('tab', slug);
+      if(slug !== 'engagement') updateUrlParam('engage_view', '');
+    });
+
+    // Click-handler fallback for any non-jQuery-UI tab implementations that
+    // don't fire tabsactivate. Uses the clicked link's text directly instead
+    // of polling the DOM, so it doesn't race against the activation.
     function bindNav() {
       var $links = getNavAnchors('#pwna-wiretabs', cfg);
       if(!$links.length) return false;
@@ -1120,13 +1137,14 @@ protected function renderWireTabsScript($activeTab, $engagementView) {
         if($link.data('pwnaTabBound')) return;
         $link.data('pwnaTabBound', 1);
         $link.on('click', function(){
-          var clickedSlug = slugFromLabel(cfg, $link.text()) || preferredSlug || 'overview';
+          var clickedLabel = $link.text();
+          var clickedSlug = slugFromLabel(cfg, clickedLabel);
+          if(!clickedSlug) return;
           setTimeout(function(){
-            syncMainTabState('#pwna-wiretabs', cfg, clickedSlug);
+            writeStored(cfg.storageKey, cfg.labels[clickedSlug] || clickedLabel);
+            updateUrlParam('tab', clickedSlug);
+            if(clickedSlug !== 'engagement') updateUrlParam('engage_view', '');
           }, 0);
-          setTimeout(function(){
-            syncMainTabState('#pwna-wiretabs', cfg, clickedSlug);
-          }, 80);
         });
       });
       return true;

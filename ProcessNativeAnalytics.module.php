@@ -1144,6 +1144,13 @@ protected function renderWireTabsScript($activeTab, $engagementView) {
     // Click-handler fallback for any non-jQuery-UI tab implementations that
     // don't fire tabsactivate. Uses the clicked link's text directly instead
     // of polling the DOM, so it doesn't race against the activation.
+    //
+    // The event.originalEvent check filters out programmatic clicks
+    // (.trigger('click') from WireTabs internal init and from activateBySlug
+    // above). For real DOM events jQuery sets originalEvent to the browser's
+    // MouseEvent; for synthetic events it's undefined. Without this guard,
+    // the URL briefly flashed to ?tab=overview on reload as WireTabs's
+    // init-time click on the default tab fired this handler.
     function bindNav() {
       var $links = getNavAnchors('#pwna-wiretabs', cfg);
       if(!$links.length) return false;
@@ -1151,7 +1158,8 @@ protected function renderWireTabsScript($activeTab, $engagementView) {
         var $link = $(this);
         if($link.data('pwnaTabBound')) return;
         $link.data('pwnaTabBound', 1);
-        $link.on('click', function(){
+        $link.on('click', function(event){
+          if(!event || !event.originalEvent) return; // ignore programmatic clicks
           var clickedLabel = $link.text();
           var clickedSlug = slugFromLabel(cfg, clickedLabel);
           if(!clickedSlug) return;

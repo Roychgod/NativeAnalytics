@@ -1117,10 +1117,25 @@ protected function renderWireTabsScript($activeTab, $engagementView) {
     // the race where a click-time setTimeout reads getActiveSlug() before
     // WireTabs has swapped the .ui-tabs-active class — which used to make
     // the URL stick on whatever tab was active before the click.
+    //
+    // BUT: tabsactivate ALSO fires during initial widget setup for whatever
+    // jQuery UI considers the default active tab (typically Overview). On a
+    // page load with ?tab=engagement, that initial firing would clobber the
+    // URL to ?tab=overview before activateBySlug had a chance to switch. So
+    // we gate the handler with a flag that only opens once either (a) the
+    // tab we wanted from the URL has actually been activated, or (b) a
+    // safety timeout fires, whichever comes first.
+    var initialTabActivated = false;
+    var initialTargetSlug = preferredSlug;
+    setTimeout(function(){ initialTabActivated = true; }, 2000);
     $('#pwna-wiretabs').on('tabsactivate', function(event, ui){
       var label = (ui && ui.newTab && ui.newTab.length) ? ui.newTab.find('a').first().text() : '';
       var slug = slugFromLabel(cfg, label);
       if(!slug) return;
+      if(!initialTabActivated) {
+        if(slug === initialTargetSlug) initialTabActivated = true;
+        return; // don't write URL during initial WireTabs convergence
+      }
       writeStored(cfg.storageKey, cfg.labels[slug] || label);
       updateUrlParam('tab', slug);
       if(slug !== 'engagement') updateUrlParam('engage_view', '');
@@ -1156,9 +1171,10 @@ protected function renderWireTabsScript($activeTab, $engagementView) {
       setTimeout(bindNav, 320);
     }
 
-    setTimeout(function(){ syncMainTabState('#pwna-wiretabs', cfg, preferredSlug); }, 60);
-    setTimeout(function(){ syncMainTabState('#pwna-wiretabs', cfg, preferredSlug); }, 220);
-
+    // Capture final tab + storage state when the user navigates away.
+    // (The previous deferred syncMainTabState calls at 60ms/220ms were
+    // removed because they re-introduced the getActiveSlug-vs-DOM race
+    // tabsactivate is meant to avoid.)
     $(window).on('pagehide beforeunload', function(){
       syncMainTabState('#pwna-wiretabs', cfg, preferredSlug);
     });

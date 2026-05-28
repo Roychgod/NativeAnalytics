@@ -2,7 +2,7 @@
 
 class NativeAnalytics extends WireData implements Module, ConfigurableModule {
 
-    const VERSION = '1.0.24';
+    const VERSION = '1.0.25';
     const HITS_TABLE = 'pwna_hits';
     const DAILY_TABLE = 'pwna_daily';
     const SESSIONS_TABLE = 'pwna_sessions';
@@ -46,13 +46,18 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         'monthlyReportIncludeEvents' => 1,
         'monthlyReportLastSentPeriod' => '',
         'trackingMode' => 'js_first',
+        'botFilterEnabled' => 1,
+        'botFleetMinSessions' => 20,
+        'botFleetMinIps' => 5,
+        'botFleetWindowMinutes' => 240,
+        'botIpMaxHitsPerHour' => 30,
     ];
 
     public static function getModuleInfo() {
         return [
             'title' => 'NativeAnalytics',
             'summary' => 'Native first-party analytics dashboard for ProcessWire with traffic, compare, exports, event tracking and goals.',
-            'version' => 1024,
+            'version' => 1025,
             'author' => 'Pyxios - Roych (www.pyxios.com)',
             'href' => 'https://processwire.com/talk/topic/31808-native-analytics-%E2%80%94-a-native-analytics-module-for-processwire/',
             'repo' => 'https://github.com/Roychgod/NativeAnalytics',
@@ -612,7 +617,8 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
                 'session_hash' => "`session_hash` CHAR(64) NOT NULL DEFAULT '' AFTER `visitor_hash`",
                 'ip_hash' => "`ip_hash` CHAR(64) NOT NULL DEFAULT '' AFTER `session_hash`",
                 'is_bot' => "`is_bot` TINYINT(1) NOT NULL DEFAULT 0 AFTER `ip_hash`",
-                'status_code' => "`status_code` SMALLINT UNSIGNED NOT NULL DEFAULT 200 AFTER `is_bot`",
+                'bot_reason' => "`bot_reason` VARCHAR(64) NOT NULL DEFAULT '' AFTER `is_bot`",
+                'status_code' => "`status_code` SMALLINT UNSIGNED NOT NULL DEFAULT 200 AFTER `bot_reason`",
             ],
             self::DAILY_TABLE => [
                 'page_title' => "`page_title` VARCHAR(255) NOT NULL DEFAULT '' AFTER `page_id`",
@@ -657,6 +663,8 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
                 'extra_json' => "`extra_json` MEDIUMTEXT NULL AFTER `event_target`",
                 'visitor_hash' => "`visitor_hash` CHAR(64) NOT NULL DEFAULT '' AFTER `extra_json`",
                 'session_hash' => "`session_hash` CHAR(64) NOT NULL DEFAULT '' AFTER `visitor_hash`",
+                'is_bot' => "`is_bot` TINYINT(1) NOT NULL DEFAULT 0 AFTER `session_hash`",
+                'bot_reason' => "`bot_reason` VARCHAR(64) NOT NULL DEFAULT '' AFTER `is_bot`",
             ],
             self::EVENT_DAILY_TABLE => [
                 'page_id' => "`page_id` INT UNSIGNED NOT NULL DEFAULT 0 AFTER `day`",
@@ -696,6 +704,9 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
                 $this->ensureColumn($table, $column, $definition);
             }
         }
+
+        $this->ensureIndex(self::HITS_TABLE, 'is_bot', '`is_bot`');
+        $this->ensureIndex(self::EVENTS_TABLE, 'is_bot', '`is_bot`');
 
         $this->backfillLegacySchemaValues();
     }
@@ -1323,6 +1334,55 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $f->label = 'Custom hash salt (optional)';
         $f->value = $data['hashSalt'] ?? '';
         $f->description = 'Advanced option. Usually best left empty. A custom salt changes how anonymous visitor and session hashes are generated for this installation.';
+        $wrapper->add($f);
+
+        // ------------------------------------------------------------------
+        // Behavioral bot filter (catches headless / rotating-proxy fleets that
+        // present real-looking user agents). Runs hourly via LazyCron.
+        // ------------------------------------------------------------------
+        $f = $wire->modules->get('InputfieldCheckbox');
+        $f->name = 'botFilterEnabled';
+        $f->label = 'Behavioral bot filter';
+        $f->label2 = 'Flag headless / proxy-fleet traffic and hide it from reporting';
+        $f->icon = 'shield';
+        $f->description = 'Runs hourly. Marks sessions that match a bot pattern (many single-hit, no-referrer sessions sharing one user agent across many IPs, or excessive single-hit sessions from one IP). Flagged rows stay in the database for review but are excluded from the dashboard.';
+        if(!empty($data['botFilterEnabled'])) $f->attr('checked', 'checked');
+        $wrapper->add($f);
+
+        $f = $wire->modules->get('InputfieldInteger');
+        $f->name = 'botFleetMinSessions';
+        $f->showIf = 'botFilterEnabled=1';
+        $f->label = 'UA fleet: min sessions';
+        $f->columnWidth = 25;
+        $f->value = isset($data['botFleetMinSessions']) ? (int) $data['botFleetMinSessions'] : 20;
+        $f->description = 'Minimum single-hit, no-referrer sessions sharing one user agent before it is treated as a fleet.';
+        $wrapper->add($f);
+
+        $f = $wire->modules->get('InputfieldInteger');
+        $f->name = 'botFleetMinIps';
+        $f->showIf = 'botFilterEnabled=1';
+        $f->label = 'UA fleet: min distinct IPs';
+        $f->columnWidth = 25;
+        $f->value = isset($data['botFleetMinIps']) ? (int) $data['botFleetMinIps'] : 5;
+        $f->description = 'Minimum distinct IPs the shared user agent must span.';
+        $wrapper->add($f);
+
+        $f = $wire->modules->get('InputfieldInteger');
+        $f->name = 'botFleetWindowMinutes';
+        $f->showIf = 'botFilterEnabled=1';
+        $f->label = 'UA fleet: window (minutes)';
+        $f->columnWidth = 25;
+        $f->value = isset($data['botFleetWindowMinutes']) ? (int) $data['botFleetWindowMinutes'] : 240;
+        $f->description = 'Time window the fleet activity must cluster within.';
+        $wrapper->add($f);
+
+        $f = $wire->modules->get('InputfieldInteger');
+        $f->name = 'botIpMaxHitsPerHour';
+        $f->showIf = 'botFilterEnabled=1';
+        $f->label = 'Single IP: max sessions/hour';
+        $f->columnWidth = 25;
+        $f->value = isset($data['botIpMaxHitsPerHour']) ? (int) $data['botIpMaxHitsPerHour'] : 30;
+        $f->description = 'Single-hit, no-referrer sessions from one IP in one hour before that IP is flagged.';
         $wrapper->add($f);
 
         // ------------------------------------------------------------------
@@ -2573,11 +2633,133 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
     }
 
     public function handleHourlyCron() {
+        if(!empty($this->botFilterEnabled)) $this->markBehavioralBots(24);
         $day = date('Y-m-d');
         $this->rebuildDailyAggregate($day);
         $this->rebuildEventDailyAggregate($day);
         $this->rebuildGoalDailyAggregate($day);
         $this->purgeOldRealtimeSessions();
+    }
+
+    /**
+     * Post-hoc behavioral bot classifier.
+     *
+     * UA-based detection (matomo/device-detector + regex) cannot catch
+     * headless-browser scrapers and rotating-residential-proxy fleets that
+     * present real-looking UA strings. This scans recently-recorded hits for
+     * the behavioral signature of such fleets and marks matching sessions
+     * is_bot = 1 with a short bot_reason. Rows stay in the table for forensic
+     * review; analytics queries exclude them by default via buildWhere().
+     *
+     * Rules (conservative — favor false negatives over false positives):
+     *  - ua_fleet:     N+ single-hit/no-referrer sessions sharing one UA across
+     *                  M+ distinct IPs within a time window (rotating proxies).
+     *  - ip_excessive: K+ single-hit/no-referrer sessions from one IP in an hour.
+     *
+     * Per-session safety: only sessions that themselves match the bot pattern
+     * (single-hit + no-referrer) are flagged, so a legitimate visitor on a
+     * stale browser version sharing a UA is not collateral damage.
+     *
+     * Originally contributed by adrianbj (PR #4). Thresholds are configurable
+     * via module settings; the values passed here fall back to those defaults.
+     *
+     * @param int $lookbackHours How far back to scan.
+     * @return array Counts keyed by reason.
+     */
+    public function markBehavioralBots($lookbackHours = 24) {
+        $db = $this->wire('database');
+        $hits = self::HITS_TABLE;
+        $events = self::EVENTS_TABLE;
+
+        $lookbackHours = max(1, (int) $lookbackHours);
+        $uaSessions = max(2, (int) $this->botFleetMinSessions);
+        $uaIps      = max(2, (int) $this->botFleetMinIps);
+        $uaWindow   = max(5, (int) $this->botFleetWindowMinutes);
+        $ipHits     = max(2, (int) $this->botIpMaxHitsPerHour);
+
+        $result = ['ua_fleet' => 0, 'ip_excessive' => 0, 'events_propagated' => 0];
+        $since = date('Y-m-d H:i:s', time() - ($lookbackHours * 3600));
+
+        try {
+            // Rule 1: ua_fleet — a single UA producing many single-hit,
+            // no-referrer sessions across many distinct IPs in a short window.
+            $sql = "UPDATE `{$hits}` h
+                JOIN (
+                    SELECT `user_agent`
+                    FROM `{$hits}`
+                    WHERE `created_at` >= :since
+                      AND `is_bot` = 0
+                      AND `referrer_host` = ''
+                      AND `user_agent` <> ''
+                    GROUP BY `user_agent`
+                    HAVING COUNT(DISTINCT `session_hash`) >= :min_sessions
+                       AND COUNT(DISTINCT `ip_hash`) >= :min_ips
+                       AND TIMESTAMPDIFF(MINUTE, MIN(`created_at`), MAX(`created_at`)) <= :window
+                ) fleet ON fleet.`user_agent` = h.`user_agent`
+                JOIN (
+                    SELECT `session_hash`
+                    FROM `{$hits}`
+                    WHERE `created_at` >= :since2
+                    GROUP BY `session_hash`
+                    HAVING COUNT(*) = 1 AND MAX(`referrer_host`) = ''
+                ) single ON single.`session_hash` = h.`session_hash`
+                SET h.`is_bot` = 1, h.`bot_reason` = 'ua_fleet'
+                WHERE h.`is_bot` = 0 AND h.`created_at` >= :since3";
+            $stmt = $db->prepare($sql);
+            $stmt->execute([
+                ':since' => $since, ':since2' => $since, ':since3' => $since,
+                ':min_sessions' => $uaSessions, ':min_ips' => $uaIps, ':window' => $uaWindow,
+            ]);
+            $result['ua_fleet'] = (int) $stmt->rowCount();
+
+            // Rule 2: ip_excessive — one IP producing many single-hit,
+            // no-referrer sessions within a single clock hour.
+            $sql = "UPDATE `{$hits}` h
+                JOIN (
+                    SELECT `ip_hash`, `created_date`, `created_hour`
+                    FROM `{$hits}`
+                    WHERE `created_at` >= :since
+                      AND `is_bot` = 0
+                      AND `referrer_host` = ''
+                      AND `ip_hash` <> ''
+                    GROUP BY `ip_hash`, `created_date`, `created_hour`
+                    HAVING COUNT(DISTINCT `session_hash`) >= :max_hits
+                ) burst ON burst.`ip_hash` = h.`ip_hash`
+                      AND burst.`created_date` = h.`created_date`
+                      AND burst.`created_hour` = h.`created_hour`
+                JOIN (
+                    SELECT `session_hash`
+                    FROM `{$hits}`
+                    WHERE `created_at` >= :since2
+                    GROUP BY `session_hash`
+                    HAVING COUNT(*) = 1 AND MAX(`referrer_host`) = ''
+                ) single ON single.`session_hash` = h.`session_hash`
+                SET h.`is_bot` = 1, h.`bot_reason` = 'ip_excessive'
+                WHERE h.`is_bot` = 0 AND h.`created_at` >= :since3";
+            $stmt = $db->prepare($sql);
+            $stmt->execute([
+                ':since' => $since, ':since2' => $since, ':since3' => $since,
+                ':max_hits' => $ipHits,
+            ]);
+            $result['ip_excessive'] = (int) $stmt->rowCount();
+
+            // Propagate the flag to events by session_hash.
+            $sql = "UPDATE `{$events}` e
+                JOIN (
+                    SELECT DISTINCT `session_hash`, `bot_reason`
+                    FROM `{$hits}`
+                    WHERE `is_bot` = 1 AND `created_at` >= :since AND `session_hash` <> ''
+                ) b ON b.`session_hash` = e.`session_hash`
+                SET e.`is_bot` = 1, e.`bot_reason` = b.`bot_reason`
+                WHERE e.`is_bot` = 0";
+            $stmt = $db->prepare($sql);
+            $stmt->execute([':since' => $since]);
+            $result['events_propagated'] = (int) $stmt->rowCount();
+        } catch(\Throwable $e) {
+            $this->log('markBehavioralBots failed: ' . $e->getMessage());
+        }
+
+        return $result;
     }
 
     public function rebuildDailyAggregate($day) {
@@ -2593,7 +2775,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             SELECT :day, `page_id`, MAX(`page_title`), `template`, `path`, `path_hash`,
                    COUNT(*), COUNT(DISTINCT `visitor_hash`), COUNT(DISTINCT `session_hash`)
             FROM `" . self::HITS_TABLE . "`
-            WHERE `created_at` >= :start AND `created_at` < :end
+            WHERE `created_at` >= :start AND `created_at` < :end AND `is_bot` = 0
             GROUP BY `page_id`, `template`, `path`, `path_hash`";
         $stmt = $db->prepare($sql);
         $stmt->execute([':day' => $day, ':start' => $day . ' 00:00:00', ':end' => $nextDay . ' 00:00:00']);
@@ -2612,7 +2794,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             SELECT :day, `page_id`, `template`, `event_group`, `event_name`, `event_label`, MD5(`event_label`), `event_target`, MD5(`event_target`),
                    COUNT(*), COUNT(DISTINCT `visitor_hash`), COUNT(DISTINCT `session_hash`)
             FROM `" . self::EVENTS_TABLE . "`
-            WHERE `created_at` >= :start AND `created_at` < :end
+            WHERE `created_at` >= :start AND `created_at` < :end AND `is_bot` = 0
             GROUP BY `page_id`, `template`, `event_group`, `event_name`, `event_label`, `event_target`";
         $stmt = $db->prepare($sql);
         $stmt->execute([':day' => $day, ':start' => $day . ' 00:00:00', ':end' => $nextDay . ' 00:00:00']);
@@ -3102,6 +3284,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
     protected function buildWhere(array $filters, array $range, array $extra = []) {
         $where = ['created_at >= :start', 'created_at <= :end'];
         $params = [':start' => $range['start'], ':end' => $range['end']];
+        if(empty($filters['include_bots'])) $where[] = 'is_bot = 0';
         if(!empty($filters['page_id'])) {
             $where[] = 'page_id = :page_id';
             $params[':page_id'] = (int) $filters['page_id'];
@@ -3117,6 +3300,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
     protected function buildEventWhere(array $filters, array $range, $group = '', array $extra = []) {
         $where = ['created_at >= :start', 'created_at <= :end'];
         $params = [':start' => $range['start'], ':end' => $range['end']];
+        if(empty($filters['include_bots'])) $where[] = 'is_bot = 0';
         if(!empty($filters['page_id'])) {
             $where[] = 'page_id = :page_id';
             $params[':page_id'] = (int) $filters['page_id'];
@@ -3585,6 +3769,12 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         }
         if(!$editedPage || !$editedPage->id || ($editedPage->template && $editedPage->template->name === 'admin')) return;
 
+        // Only show the widget on pages that are actually viewable and have a
+        // real front-end URL — i.e. pages that can accumulate stats. Skip
+        // non-viewable pages (no template file, hidden/unpublished, or pages
+        // that merely back a Page Reference field), where stats are meaningless.
+        if(!$this->pageHasViewableStats($editedPage)) return;
+
         $summary7 = $this->getPageSummary($editedPage->id, 7);
         $summary30 = $this->getPageSummary($editedPage->id, 30);
         $current = $this->getCurrentVisitorsSummary((int) $this->realtimeWindowMinutes, ['page_id' => (int) $editedPage->id]);
@@ -3599,6 +3789,27 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $field->collapsed = Inputfield::collapsedNo;
         $field->value = $this->renderMiniStatsBox($summary7, $summary30, $current, $editedPage);
         $form->add($field);
+    }
+
+    /**
+     * Whether a page can meaningfully accumulate front-end stats: it must have
+     * a template with a file, be viewable, and resolve to a real http URL.
+     * Pages that only back a Page Reference field (no template file) return
+     * false, so the analytics widget is hidden for them.
+     */
+    protected function pageHasViewableStats(Page $page) {
+        try {
+            $tpl = $page->template;
+            if(!$tpl) return false;
+            // No template file => not a front-end-rendered page.
+            if(!$tpl->filenameExists()) return false;
+            if(!$page->viewable()) return false;
+            $url = (string) $page->httpUrl();
+            if($url === '') return false;
+        } catch(\Throwable $e) {
+            return false;
+        }
+        return true;
     }
 
     public function renderMiniStatsBox(array $summary7, array $summary30, array $current, Page $page) {
@@ -4853,7 +5064,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             // Generic markers
             . 'bot\b|crawl|spider|slurp|fetch(?!er-cit)|preview|headless|monitor|scanner|archiver|indexer|validator|checker|analyzer|inspector|harvester|extractor|parser\b'
             // Tooling / scripts / HTTP libraries
-            . '|python-requests|python-urllib|python/[\d\.]+|aiohttp|httpx|node-fetch|undici|got/[\d\.]+|axios|guzzlehttp|reqwest|okhttp|libwww-perl|java/[\d\.]+|apache-httpclient'
+            . '|python-requests|python-urllib|python\/[\d\.]+|aiohttp|httpx|node-fetch|undici|got\/[\d\.]+|axios|guzzlehttp|reqwest|okhttp|libwww-perl|java\/[\d\.]+|apache-httpclient'
             . '|wget|curl|go-http-client|ruby|scrapy|phantomjs|selenium|puppeteer|playwright|chrome-lighthouse|httrack|wkhtmltopdf|katana|colly|crawlee|nutch'
             // Social previewers
             . '|facebookexternalhit|facebot|twitterbot|linkedinbot|whatsapp|telegrambot|slackbot|discordbot|skypeuripreview|embedly|tumblr|pinterest|vkshare|redditbot|mastodon|threads\b|bluesky'

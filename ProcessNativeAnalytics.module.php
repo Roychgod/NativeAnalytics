@@ -6,7 +6,7 @@ class ProcessNativeAnalytics extends Process {
         return [
             'title' => 'NativeAnalytics Dashboard',
             'summary' => 'Dashboard for the NativeAnalytics module.',
-            'version' => 1024,
+            'version' => 1025,
             'author' => 'Pyxios - Roych (www.pyxios.com)',
             'permission' => 'nativeanalytics-view',
             'icon' => 'area-chart',
@@ -1031,10 +1031,24 @@ protected function renderWireTabsScript($activeTab, $engagementView) {
       window.history.replaceState({}, document.title, url.toString());
     } catch(e) {}
   }
+  function normLabel(s) {
+    return $.trim(String(s || '')).replace(/\s+/g, ' ').toLowerCase();
+  }
   function slugFromLabel(cfg, label) {
     var labels = (cfg && cfg.labels) || {};
+    var target = normLabel(label);
+    if(!target) return '';
+    // Exact (normalized) match first.
     for(var key in labels) {
-      if(Object.prototype.hasOwnProperty.call(labels, key) && $.trim(labels[key]) === $.trim(label)) return key;
+      if(Object.prototype.hasOwnProperty.call(labels, key) && normLabel(labels[key]) === target) return key;
+    }
+    // Fall back to substring match, so an icon glyph, badge, or extra markup
+    // inside the tab anchor (common with WireTabs / admin themes) still maps
+    // to the right slug instead of returning '' and breaking tab tracking.
+    for(var key2 in labels) {
+      if(!Object.prototype.hasOwnProperty.call(labels, key2)) continue;
+      var lab = normLabel(labels[key2]);
+      if(lab && (target.indexOf(lab) !== -1 || lab.indexOf(target) !== -1)) return key2;
     }
     return '';
   }
@@ -1052,7 +1066,7 @@ protected function renderWireTabsScript($activeTab, $engagementView) {
       var $links = getNavAnchors(rootSelector, cfg);
       if(!$links.length) return false;
       var $link = $links.filter(function(){
-        return $.trim($(this).text()) === $.trim(label);
+        return slugFromLabel(cfg, $(this).text()) === slug;
       }).first();
       if(!$link.length) return false;
       $link.trigger('click');

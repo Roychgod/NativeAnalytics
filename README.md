@@ -1,10 +1,10 @@
-NativeAnalytics 1.0.24
+NativeAnalytics 1.0.25
 
 # NativeAnalytics
 
 Native first-party analytics module for ProcessWire CMS. It tracks traffic and engagement directly inside ProcessWire, without Google Analytics or external APIs.
 
-## Features in v1.0.24
+## Features in v1.0.25
 
 NativeAnalytics is a first-party analytics dashboard for ProcessWire. It keeps the tracking data inside your ProcessWire installation and does not rely on Google Analytics, external tracking scripts or remote analytics APIs.
 
@@ -217,3 +217,19 @@ This release mainly focuses on cleaner analytics data, better bot/noise filterin
 - Reorganized the module settings screen into clearer grouped/collapsible sections for tracking, filters, bot detection, privacy/consent, retention, reports and advanced options.
 - Improved bundled library fallback handling and admin status messages around optional detection libraries.
 - Updated module version metadata to `1.0.24` / integer `1024` for both NativeAnalytics and the dashboard process module.
+
+## 1.0.25 notes
+
+This release fixes a significant bot-detection bug, adds a behavioral bot filter, and hides the page-edit analytics widget on non-viewable pages.
+
+- **Fixed a broken bot user-agent regex.** Three version patterns (`python/`, `got/`, `java/`) contained unescaped `/` characters that matched the regex delimiter, causing `preg_match()` to fail to compile and return `false` on every call. The entire fallback section after that point — AI scrapers, SEO crawlers, search-engine bots, uptime monitors, security scanners and headless-browser signatures — was effectively unreachable. The slashes are now escaped and the full pattern compiles and matches as intended. (Fixes the `preg_match(): Unknown modifier '['` report; thanks to adrianbj for diagnosing and the patch.)
+- **Added a behavioral bot filter.** UA-based detection cannot catch headless-browser scrapers and rotating-residential-proxy fleets that present real-looking user agents. A new post-hoc classifier runs hourly via LazyCron and marks matching sessions as bots based on behavior rather than UA string:
+  - **UA fleet** — many single-hit, no-referrer sessions sharing one user agent across many distinct IPs within a short window (catches rotating-proxy scrapers).
+  - **Single IP** — excessive single-hit, no-referrer sessions from one IP within one hour (catches naive single-IP scrapers).
+  Flagged rows stay in the database for review but are excluded from all dashboard reporting and daily rollups. Per-session safety: only sessions that themselves match the pattern are flagged, so a legitimate visitor on a stale browser version sharing a user agent is never collateral damage. Original approach contributed by adrianbj (PR #4).
+- **Bot-filter thresholds are configurable.** The four thresholds (UA-fleet minimum sessions, minimum distinct IPs, time window, and single-IP sessions-per-hour) are exposed as module settings, with the conservative defaults of 20 / 5 / 240 min / 30. The whole filter can be toggled off.
+- **Schema:** adds `bot_reason` to `pwna_hits`, plus `is_bot` and `bot_reason` to `pwna_events`, with `is_bot` indexes on both tables. Migration is automatic and non-destructive — existing rows get default values (`is_bot=0`, `bot_reason=''`).
+- **Note for existing installs:** after upgrading, the hourly cron will begin flagging matching historical traffic, so dashboard totals (especially single-page rate) may shift to reflect the post-filter view. This is expected.
+- Updated module version metadata to `1.0.25` / integer `1025` for both NativeAnalytics and the dashboard process module.
+- **Page-edit analytics widget now only shows on viewable pages.** The compact analytics box in the page editor is hidden for pages that cannot accumulate front-end stats — pages with no template file, non-viewable/unpublished pages, and pages that merely back a Page Reference field. It still appears on normal viewable pages as before.
+- **Fixed tab not updating the `?tab=` querystring (issue #3).** The dashboard tab tracking matched WireTabs anchors by exact visible label text. When an anchor contained an icon glyph, badge, or extra whitespace, the match failed, no click handler bound, and the URL stayed stuck at `?tab=overview`. Label matching is now whitespace- and case-tolerant with a substring fallback, so each tab updates the querystring correctly.

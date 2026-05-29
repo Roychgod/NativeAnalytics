@@ -2949,10 +2949,23 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $where = $this->buildRealtimeWhere($minutes, $filters);
         // Fetch more rows than needed, so we can filter out bot sessions
         $fetchLimit = max(100, (int) $limit * 4);
+        // Honor the persistent behavioral classifier (markBehavioralBots, run
+        // by the hourly cron) in the live panel: any visitor whose hits have
+        // been marked is_bot = 1 — ua_fleet, ip_excessive, scanner_404 — is
+        // excluded here, the same way they are already excluded from every
+        // aggregate query via buildWhere(). The 1-day lookback is wide enough
+        // to cover any visitor still inside the 5-minute realtime window.
         $sql = "SELECT page_id, page_title, template, current_path, current_url, referrer_host, device_type, browser, os, visitor_hash,
                        first_seen_at, last_seen_at, hit_count, status_code
                 FROM `" . self::SESSIONS_TABLE . "`
                 WHERE {$where['sql']}
+                  AND visitor_hash NOT IN (
+                    SELECT `visitor_hash`
+                    FROM `" . self::HITS_TABLE . "`
+                    WHERE `is_bot` = 1
+                      AND `visitor_hash` <> ''
+                      AND `created_at` >= DATE_SUB(NOW(), INTERVAL 1 DAY)
+                  )
                 ORDER BY last_seen_at DESC
                 LIMIT " . $fetchLimit;
         $stmt = $this->wire('database')->prepare($sql);

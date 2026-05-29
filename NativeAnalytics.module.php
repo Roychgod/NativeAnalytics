@@ -2,7 +2,7 @@
 
 class NativeAnalytics extends WireData implements Module, ConfigurableModule {
 
-    const VERSION = '1.0.25';
+    const VERSION = '1.0.26';
     const HITS_TABLE = 'pwna_hits';
     const DAILY_TABLE = 'pwna_daily';
     const SESSIONS_TABLE = 'pwna_sessions';
@@ -51,13 +51,14 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         'botFleetMinIps' => 5,
         'botFleetWindowMinutes' => 240,
         'botIpMaxHitsPerHour' => 30,
+        'bot404ShowBots' => 0,
     ];
 
     public static function getModuleInfo() {
         return [
             'title' => 'NativeAnalytics',
             'summary' => 'Native first-party analytics dashboard for ProcessWire with traffic, compare, exports, event tracking and goals.',
-            'version' => 1025,
+            'version' => 1026,
             'author' => 'Pyxios - Roych (www.pyxios.com)',
             'href' => 'https://processwire.com/talk/topic/31808-native-analytics-%E2%80%94-a-native-analytics-module-for-processwire/',
             'repo' => 'https://github.com/Roychgod/NativeAnalytics',
@@ -438,7 +439,9 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             `session_hash` CHAR(64) NOT NULL,
             `ip_hash` CHAR(64) NOT NULL,
             `is_bot` TINYINT(1) NOT NULL DEFAULT 0,
+            `bot_reason` VARCHAR(64) NOT NULL DEFAULT '',
             `status_code` SMALLINT UNSIGNED NOT NULL DEFAULT 200,
+            `time_on_page` SMALLINT UNSIGNED NOT NULL DEFAULT 0,
             PRIMARY KEY (`id`),
             KEY `created_at` (`created_at`),
             KEY `created_date` (`created_date`),
@@ -512,6 +515,8 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             `extra_json` MEDIUMTEXT NULL,
             `visitor_hash` CHAR(64) NOT NULL,
             `session_hash` CHAR(64) NOT NULL,
+            `is_bot` TINYINT(1) NOT NULL DEFAULT 0,
+            `bot_reason` VARCHAR(64) NOT NULL DEFAULT '',
             PRIMARY KEY (`id`),
             KEY `created_at` (`created_at`),
             KEY `created_date` (`created_date`),
@@ -619,6 +624,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
                 'is_bot' => "`is_bot` TINYINT(1) NOT NULL DEFAULT 0 AFTER `ip_hash`",
                 'bot_reason' => "`bot_reason` VARCHAR(64) NOT NULL DEFAULT '' AFTER `is_bot`",
                 'status_code' => "`status_code` SMALLINT UNSIGNED NOT NULL DEFAULT 200 AFTER `bot_reason`",
+                'time_on_page' => "`time_on_page` SMALLINT UNSIGNED NOT NULL DEFAULT 0 AFTER `status_code`",
             ],
             self::DAILY_TABLE => [
                 'page_title' => "`page_title` VARCHAR(255) NOT NULL DEFAULT '' AFTER `page_id`",
@@ -1383,6 +1389,17 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $f->columnWidth = 25;
         $f->value = isset($data['botIpMaxHitsPerHour']) ? (int) $data['botIpMaxHitsPerHour'] : 30;
         $f->description = 'Single-hit, no-referrer sessions from one IP in one hour before that IP is flagged.';
+        $wrapper->add($f);
+
+        $f = $wire->modules->get('InputfieldCheckbox');
+        $f->name = 'bot404ShowBots';
+        $f->showIf = 'botFilterEnabled=1';
+        $f->label = '404 panel: show bot traffic';
+        $f->label2 = 'Include bot-flagged sessions in the 404 pages panel';
+        $f->icon = 'bug';
+        $f->description = 'Off by default: bot-flagged sessions are hidden from the 404 panel (consistent with all other panels). Enable to include scanner probes in the 404 panel for security visibility — useful for spotting what attackers are targeting.';
+        $current = array_key_exists('bot404ShowBots', $data) ? $data['bot404ShowBots'] : 0;
+        if(!empty($current)) $f->attr('checked', 'checked');
         $wrapper->add($f);
 
         // ------------------------------------------------------------------
@@ -2373,6 +2390,9 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         if(($payload['type'] ?? '') === 'event') {
             $this->handleEventTrackingRequest($payload);
         }
+        if(($payload['type'] ?? '') === 'time_on_page') {
+            $this->handleTimeOnPageRequest($payload);
+        }
         $ua = isset($_SERVER['HTTP_USER_AGENT']) ? trim((string) $_SERVER['HTTP_USER_AGENT']) : '';
         if($this->isBotUserAgent($ua)) $this->sendTrackingResponse(204);
         if($this->isIpBlocked()) $this->sendTrackingResponse(204);
@@ -2477,6 +2497,36 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             $this->wire('log')->save('native-analytics', 'Realtime session upsert failed: ' . $e->getMessage());
         }
 
+        $this->sendTrackingResponse(204);
+    }
+
+    protected function handleTimeOnPageRequest(array $payload) {
+        if(!$this->trackingEnabled) $this->sendTrackingResponse(204);
+        if($this->respectDnt && isset($_SERVER['HTTP_DNT']) && (string) $_SERVER['HTTP_DNT'] === '1') $this->sendTrackingResponse(204);
+        if($this->isIpBlocked()) $this->sendTrackingResponse(204);
+        $ua = isset($_SERVER['HTTP_USER_AGENT']) ? trim((string) $_SERVER['HTTP_USER_AGENT']) : '';
+        if($this->isBotUserAgent($ua)) $this->sendTrackingResponse(204);
+        if($this->requireConsent && !$this->hasConsentCookie()) $this->sendTrackingResponse(204);
+        $seconds = max(0, min(65535, (int) ($payload['seconds'] ?? 0)));
+        if($seconds < 1) $this->sendTrackingResponse(204);
+        $ids = $this->resolveIncomingTrackingIds($payload);
+        $sessionId = trim((string) ($ids['session_id'] ?? ''));
+        if($sessionId === '') $this->sendTrackingResponse(204);
+        $sessionHash = $this->hashValue($sessionId);
+        try {
+            $db = $this->wire('database');
+            // Update the most recent hit for this session, keeping the highest value seen.
+            $stmt = $db->prepare(
+                "UPDATE `" . self::HITS_TABLE . "`
+                 SET `time_on_page` = GREATEST(`time_on_page`, :seconds)
+                 WHERE `session_hash` = :hash
+                 ORDER BY `created_at` DESC
+                 LIMIT 1"
+            );
+            $stmt->execute([':seconds' => $seconds, ':hash' => $sessionHash]);
+        } catch(\Throwable $e) {
+            $this->wire('log')->save('native-analytics', 'time_on_page update failed: ' . $e->getMessage());
+        }
         $this->sendTrackingResponse(204);
     }
 
@@ -2677,7 +2727,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $uaWindow   = max(5, (int) $this->botFleetWindowMinutes);
         $ipHits     = max(2, (int) $this->botIpMaxHitsPerHour);
 
-        $result = ['ua_fleet' => 0, 'ip_excessive' => 0, 'events_propagated' => 0];
+        $result = ['ua_fleet' => 0, 'ip_excessive' => 0, 'scanner_404' => 0, 'events_propagated' => 0];
         $since = date('Y-m-d H:i:s', time() - ($lookbackHours * 3600));
 
         try {
@@ -2742,6 +2792,25 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
                 ':max_hits' => $ipHits,
             ]);
             $result['ip_excessive'] = (int) $stmt->rowCount();
+
+            // Rule 3: scanner_404 — any session whose only hit is a 404. Catches recon
+            // scanners probing for missing paths. Real users almost always produce a second
+            // action after a 404, so COUNT(*) = 1 with a 404 is a reliable scanner signal.
+            $sql = "UPDATE `{$hits}` h
+                JOIN (
+                    SELECT `session_hash`
+                    FROM `{$hits}`
+                    WHERE `created_at` >= :since
+                      AND `is_bot` = 0
+                      AND `session_hash` <> ''
+                    GROUP BY `session_hash`
+                    HAVING COUNT(*) = 1 AND MIN(`status_code`) = 404
+                ) scanner ON scanner.`session_hash` = h.`session_hash`
+                SET h.`is_bot` = 1, h.`bot_reason` = 'scanner_404'
+                WHERE h.`is_bot` = 0 AND h.`created_at` >= :since2";
+            $stmt = $db->prepare($sql);
+            $stmt->execute([':since' => $since, ':since2' => $since]);
+            $result['scanner_404'] = (int) $stmt->rowCount();
 
             // Propagate the flag to events by session_hash.
             $sql = "UPDATE `{$events}` e
@@ -2860,7 +2929,9 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
     }
 
     public function get404Summary($days = 30) {
-        $where = $this->buildWhere([], $this->getDateRangeForDays($days), ["status_code = 404"]);
+        $showBots = !empty($this->botFilterEnabled) && !empty($this->bot404ShowBots);
+        $filters = $showBots ? ['include_bots' => 1] : [];
+        $where = $this->buildWhere($filters, $this->getDateRangeForDays($days), ["status_code = 404"]);
         $sql = "SELECT COUNT(*) AS views, COUNT(DISTINCT visitor_hash) AS uniques FROM `" . self::HITS_TABLE . "` WHERE {$where['sql']}";
         $stmt = $this->wire('database')->prepare($sql);
         $stmt->execute($where['params']);
@@ -2868,12 +2939,9 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
     }
 
     public function getCurrentVisitorsSummary($minutes = null, array $filters = []) {
-        $minutes = $minutes ?: (int) $this->realtimeWindowMinutes;
-        $where = $this->buildRealtimeWhere($minutes, $filters);
-        $sql = "SELECT COUNT(*) AS current_visitors, COUNT(DISTINCT visitor_hash) AS current_uniques FROM `" . self::SESSIONS_TABLE . "` WHERE {$where['sql']}";
-        $stmt = $this->wire('database')->prepare($sql);
-        $stmt->execute($where['params']);
-        return $stmt->fetch(\PDO::FETCH_ASSOC) ?: ['current_visitors' => 0, 'current_uniques' => 0];
+        $rows = $this->getCurrentVisitors($minutes, 1000, $filters);
+        $count = count($rows);
+        return ['current_visitors' => $count, 'current_uniques' => $count];
     }
 
     public function getCurrentVisitors($minutes = null, $limit = 25, array $filters = []) {
@@ -2892,6 +2960,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC) ?: [];
 
         $result = [];
+        $seenHashes = [];
         foreach($rows as $row) {
             $row = $this->normalizeAnalyticsRowForDisplay($row, 'current_path');
             // Hide bot sessions from the live "Current visitors" panel:
@@ -2909,7 +2978,19 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             if(!empty($row['current_path']) && $this->matchesBuiltInProbePattern($row['current_path'])) $isProbeSession = true;
 
             if($isProbeSession) continue;
+
+            // Collapse multiple sessions from the same visitor (e.g. mobile tab-rotation)
+            // into a single row: keep the most-recent session (first in ORDER BY last_seen_at DESC),
+            // accumulate hit_count from later rows for the same visitor.
+            $hash = (string) ($row['visitor_hash'] ?? '');
+            if($hash !== '' && isset($seenHashes[$hash])) {
+                $result[$seenHashes[$hash]]['hit_count'] = (int) $result[$seenHashes[$hash]]['hit_count'] + (int) $row['hit_count'];
+                continue;
+            }
+
             $result[] = $row;
+            if($hash !== '') $seenHashes[$hash] = count($result) - 1;
+
             if(count($result) >= (int) $limit) break;
         }
         return $result;
@@ -3075,9 +3156,10 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $where = $this->buildWhere($filters, $range);
         $sql = "SELECT COUNT(*) AS total_sessions,
                        SUM(CASE WHEN hits_per_session = 1 THEN 1 ELSE 0 END) AS single_page_sessions,
-                       AVG(hits_per_session) AS avg_pages_per_session
+                       AVG(hits_per_session) AS avg_pages_per_session,
+                       AVG(CASE WHEN total_time > 0 THEN total_time ELSE NULL END) AS avg_time_on_page
                 FROM (
-                    SELECT session_hash, COUNT(*) AS hits_per_session
+                    SELECT session_hash, COUNT(*) AS hits_per_session, SUM(time_on_page) AS total_time
                     FROM `" . self::HITS_TABLE . "`
                     WHERE {$where['sql']}
                     GROUP BY session_hash
@@ -3089,16 +3171,20 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $single = (int) ($row['single_page_sessions'] ?? 0);
         $avg = $total > 0 ? (float) ($row['avg_pages_per_session'] ?? 0) : 0.0;
         $singleRate = $total > 0 ? round(($single / $total) * 100, 1) : 0.0;
+        $avgTime = (float) ($row['avg_time_on_page'] ?? 0);
         return [
             'total_sessions' => $total,
             'single_page_sessions' => $single,
             'avg_pages_per_session' => round($avg, 2),
             'single_page_rate' => $singleRate,
+            'avg_time_on_page' => round($avgTime),
         ];
     }
 
     public function getTop404Paths($days = 30, $limit = 15) {
-        $where = $this->buildWhere([], $this->getDateRangeForDays($days), ["status_code = 404"]);
+        $showBots = !empty($this->botFilterEnabled) && !empty($this->bot404ShowBots);
+        $filters = $showBots ? ['include_bots' => 1] : [];
+        $where = $this->buildWhere($filters, $this->getDateRangeForDays($days), ["status_code = 404"]);
         // Fetch more rows than needed so we can filter out resolvable ones
         $fetchLimit = max(50, (int) $limit * 3);
         $sql = "SELECT path, COUNT(*) AS views, COUNT(DISTINCT visitor_hash) AS uniques
@@ -3353,11 +3439,20 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
 
     public function getDateDisplayFormat() {
         $selected = trim((string) ($this->displayDateFormat ?? 'site_default'));
-        if($selected === '' || $selected === 'site_default') {
-            $siteFormat = (string) ($this->wire('config')->dateFormat ?? 'd M Y');
-            return $siteFormat !== '' ? $siteFormat : 'd M Y';
-        }
-        return $selected;
+        if($selected !== '' && $selected !== 'site_default') return $selected;
+        // $config->dateFormat is a datetime format (PW core default "Y-m-d H:i:s"),
+        // so strip the time component to keep this a date-only format.
+        $siteFormat = (string) ($this->wire('config')->dateFormat ?? '');
+        if($siteFormat === '') $siteFormat = 'd M Y';
+        return $this->stripTimeFromDateFormat($siteFormat);
+    }
+
+    protected function stripTimeFromDateFormat($format) {
+        // A configured date format may include a time component (e.g. "Y-m-d H:i:s").
+        // Drop time/timezone tokens plus any now-orphaned separators for a pure date.
+        $dateOnly = preg_replace('/[aABgGhHisuveIOPTZ]/', '', $format);
+        $dateOnly = trim(preg_replace('/\s{2,}/', ' ', $dateOnly), " \t:,.\/-");
+        return $dateOnly !== '' ? $dateOnly : 'Y-m-d';
     }
 
     public function getDateTimeDisplayFormat() {
@@ -3816,7 +3911,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $url = $this->wire('config')->urls->admin . 'native-analytics/?range=30d&page_id=' . (int) $page->id;
         $url = $this->wire('sanitizer')->entities($url);
         $minutes = max(1, (int) $this->realtimeWindowMinutes);
-        $currentVisitors = (int) ($current['current_visitors'] ?? 0);
+        $currentVisitors = (int) ($current['current_uniques'] ?? $current['current_visitors'] ?? 0);
 
         $html = '<div class="pwna-mini">';
         $html .= '<div class="pwna-mini-grid">';
@@ -3878,9 +3973,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             $primaryLabelText = (string) ($primary['label'] ?? ('Slot ' . ($i + 1)));
             $primaryTime = (string) ($primary['time_label'] ?? '');
             $compareLabelText = (string) ($compare['label'] ?? ('Slot ' . ($i + 1)));
-            $title = $primaryLabel . ': ' . $primaryLabelText . ' | ' . ucfirst($metric) . ': ' . $primaryValue . ' || ' . $secondaryLabel . ': ' . $compareLabelText . ' | ' . ucfirst($metric) . ': ' . $compareValue;
-
-            $circles[] = '<circle class="pwna-point" cx="' . $x . '" cy="' . $yPrimary . '" r="4" data-label="' . $sanitizer->entities($primaryLabelText) . '" data-time="' . $sanitizer->entities($primaryTime) . '" data-views="' . (int) ($primary['views'] ?? 0) . '" data-uniques="' . (int) ($primary['uniques'] ?? 0) . '" data-sessions="' . (int) ($primary['sessions'] ?? 0) . '" data-compare-label="' . $sanitizer->entities($secondaryLabel . ': ' . $compareLabelText) . '" data-compare-views="' . (int) ($compare['views'] ?? 0) . '" data-compare-uniques="' . (int) ($compare['uniques'] ?? 0) . '" data-compare-sessions="' . (int) ($compare['sessions'] ?? 0) . '"><title>' . $sanitizer->entities($title) . '</title></circle>';
+            $circles[] = '<circle class="pwna-point" cx="' . $x . '" cy="' . $yPrimary . '" r="4" data-label="' . $sanitizer->entities($primaryLabelText) . '" data-time="' . $sanitizer->entities($primaryTime) . '" data-views="' . (int) ($primary['views'] ?? 0) . '" data-uniques="' . (int) ($primary['uniques'] ?? 0) . '" data-sessions="' . (int) ($primary['sessions'] ?? 0) . '" data-compare-label="' . $sanitizer->entities($secondaryLabel . ': ' . $compareLabelText) . '" data-compare-views="' . (int) ($compare['views'] ?? 0) . '" data-compare-uniques="' . (int) ($compare['uniques'] ?? 0) . '" data-compare-sessions="' . (int) ($compare['sessions'] ?? 0) . '"></circle>';
         }
 
         $first = reset($primarySeries);
@@ -3937,9 +4030,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
 
             $label = (string) ($row['label'] ?? (isset($row['day']) ? $this->formatDisplayDate($row['day']) : ''));
             $timeLabel = (string) ($row['time_label'] ?? (isset($row['hour']) ? sprintf('%02d:00–%02d:59', (int) $row['hour'], (int) $row['hour']) : ''));
-            $title = trim($label . ' ' . $timeLabel) . ' | ' . $metricLabels['views'] . ': ' . (int) ($row['views'] ?? 0) . ' | ' . $metricLabels['uniques'] . ': ' . (int) ($row['uniques'] ?? 0) . ' | ' . $metricLabels['sessions'] . ': ' . (int) ($row['sessions'] ?? 0);
-
-            $circles[] = '<circle class="pwna-point" cx="' . $x . '" cy="' . $y . '" r="4" data-label="' . $sanitizer->entities($label) . '" data-time="' . $sanitizer->entities($timeLabel) . '" data-views="' . (int) ($row['views'] ?? 0) . '" data-uniques="' . (int) ($row['uniques'] ?? 0) . '" data-sessions="' . (int) ($row['sessions'] ?? 0) . '"><title>' . $sanitizer->entities($title) . '</title></circle>';
+            $circles[] = '<circle class="pwna-point" cx="' . $x . '" cy="' . $y . '" r="4" data-label="' . $sanitizer->entities($label) . '" data-time="' . $sanitizer->entities($timeLabel) . '" data-views="' . (int) ($row['views'] ?? 0) . '" data-uniques="' . (int) ($row['uniques'] ?? 0) . '" data-sessions="' . (int) ($row['sessions'] ?? 0) . '"></circle>';
         }
 
         $first = reset($series);
@@ -4643,7 +4734,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $html .= '<tr>';
         $html .= $this->renderMonthlyReportMetricCell('Events', (int) ($eventSummary['events'] ?? 0));
         $html .= $this->renderMonthlyReportMetricCell('Avg. pages/session', number_format((float) ($quality['avg_pages_per_session'] ?? 0), 2));
-        $html .= $this->renderMonthlyReportMetricCell('Single-page sessions', (string) ($quality['single_page_rate'] ?? 0) . '%');
+        $html .= $this->renderMonthlyReportMetricCell('Single-page rate', (string) ($quality['single_page_rate'] ?? 0) . '%');
         $html .= $this->renderMonthlyReportMetricCell('Event sessions', (int) ($eventSummary['sessions'] ?? 0));
         $html .= '</tr>';
         $html .= '</table>';
@@ -4725,7 +4816,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $lines[] = '404 hits: ' . (int) ($summary404['views'] ?? 0);
         $lines[] = 'Events: ' . (int) ($eventSummary['events'] ?? 0);
         $lines[] = 'Avg. pages/session: ' . number_format((float) ($quality['avg_pages_per_session'] ?? 0), 2);
-        $lines[] = 'Single-page sessions: ' . (string) ($quality['single_page_rate'] ?? 0) . '%';
+        $lines[] = 'Single-page rate: ' . (string) ($quality['single_page_rate'] ?? 0) . '%';
         $lines[] = '';
 
         if(!empty($this->monthlyReportIncludeTopPages)) {

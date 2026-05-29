@@ -293,4 +293,51 @@
   }
 
   if (cfg.autoTrack) window.PWNA.trackPageview();
+
+  // Time-on-page: measure active time using Page Visibility API.
+  // We track "active" seconds only (tab must be visible). On tab hide or
+  // page unload we send a lightweight beacon so the server can update the hit.
+  (function () {
+    var startVisible = document.visibilityState === 'visible' ? Date.now() : null;
+    var accumulated = 0;
+    var sent = false;
+
+    function activeSeconds() {
+      var extra = (startVisible !== null) ? Math.floor((Date.now() - startVisible) / 1000) : 0;
+      return accumulated + extra;
+    }
+
+    function sendTime() {
+      if (sent || !pageviewTracked || !canTrack()) return;
+      var secs = activeSeconds();
+      if (secs < 1) return;
+      sent = true;
+      var ids = getIds();
+      var payload = JSON.stringify({
+        type: 'time_on_page',
+        sessionId: ids.sessionId,
+        visitorId: ids.visitorId,
+        seconds: secs
+      });
+      if (navigator.sendBeacon && cfg.trackEndpoint) {
+        navigator.sendBeacon(cfg.trackEndpoint, new Blob([payload], { type: 'application/json' }));
+      }
+    }
+
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState === 'hidden') {
+        if (startVisible !== null) {
+          accumulated += Math.floor((Date.now() - startVisible) / 1000);
+          startVisible = null;
+        }
+        sendTime();
+      } else {
+        // Tab became visible again — restart timer, allow re-send on next hide.
+        startVisible = Date.now();
+        sent = false;
+      }
+    });
+
+    window.addEventListener('pagehide', sendTime);
+  }());
 })();

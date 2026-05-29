@@ -1,10 +1,10 @@
-NativeAnalytics 1.0.25
+NativeAnalytics 1.0.26
 
 # NativeAnalytics
 
 Native first-party analytics module for ProcessWire CMS. It tracks traffic and engagement directly inside ProcessWire, without Google Analytics or external APIs.
 
-## Features in v1.0.25
+## Features in v1.0.26
 
 NativeAnalytics is a first-party analytics dashboard for ProcessWire. It keeps the tracking data inside your ProcessWire installation and does not rely on Google Analytics, external tracking scripts or remote analytics APIs.
 
@@ -233,3 +233,13 @@ This release fixes a significant bot-detection bug, adds a behavioral bot filter
 - Updated module version metadata to `1.0.25` / integer `1025` for both NativeAnalytics and the dashboard process module.
 - **Page-edit analytics widget now only shows on viewable pages.** The compact analytics box in the page editor is hidden for pages that cannot accumulate front-end stats — pages with no template file, non-viewable/unpublished pages, and pages that merely back a Page Reference field. It still appears on normal viewable pages as before.
 - **Fixed tab not updating the `?tab=` querystring (issue #3).** The dashboard tab tracking matched WireTabs anchors by exact visible label text. When an anchor contained an icon glyph, badge, or extra whitespace, the match failed, no click handler bound, and the URL stayed stuck at `?tab=overview`. Label matching is now whitespace- and case-tolerant with a substring fallback, so each tab updates the querystring correctly.
+
+## 1.0.26 notes
+
+Thanks to **[adrianbj](https://github.com/adrianbj)** for all five improvements in this release — each was reported, diagnosed, and patched from real-world production use.
+
+- **Fixed date labels showing `00:00:00` on charts (PR #9).** `getDateDisplayFormat()` fell back to ProcessWire's `$config->dateFormat` for the "Site default" option, but that is a *datetime* format (core default `Y-m-d H:i:s`). Chart labels and tooltips therefore rendered dates with a trailing `00:00:00` time component. A new `stripTimeFromDateFormat()` helper strips time/timezone tokens from the site format so the date-only formatter stays date-only. `formatDisplayDateTime()` is unaffected and still renders the full timestamp. (adrianbj, PR #9)
+- **Removed redundant native browser tooltips from charts (PR #8).** Each SVG chart point carried a `<title>` element, which browsers render as a grey native tooltip on hover. It overlapped the custom styled tooltip that already shows the same information. The `<title>` element (and its now-unused `$title` build) has been removed from both the line chart and compare chart renderers. (adrianbj, PR #8)
+- **Current visitors panel now shows one row per person, not per session (PR #7).** Mobile browsers aggressively discard and restore background tabs, wiping `sessionStorage` and minting a fresh session ID on the next pageview — even though `localStorage` (and therefore `visitor_hash`) is unchanged. The panel was listing one row per session, so a single mobile visitor could appear as two or three rows while the summary card above correctly counted them as one unique. `getCurrentVisitors()` now collapses rows by `visitor_hash`, keeping the most-recent session and summing `hit_count` across all sessions in the realtime window. Matches the behaviour of Plausible, Fathom, and GA Realtime. (adrianbj, PR #7)
+- **Fixed `?tab=` URL parameter not updating when switching tabs (PR #6).** The original click handler polled the DOM for the active tab inside a `setTimeout(0)`, but jQuery UI may not have swapped the `.ui-tabs-active` class yet at that point, so `getActiveSlug()` returned the *previous* tab. Four compounding causes were fixed across four commits: (1) switched primary URL-sync to jQuery UI's `tabsactivate` event, which fires after activation and exposes `ui.newTab` directly; (2) gated `tabsactivate` with an `initialTabActivated` flag to suppress URL writes during widget creation; (3) filtered the click handler to real DOM events using `event.originalEvent` to ignore programmatic `.trigger()` calls from WireTabs init; (4) removed the `pagehide`/`beforeunload` listener that was calling `syncMainTabState()` during page teardown — jQuery UI strips `.ui-tabs-active` during widget destruction, causing the URL to briefly flash to `?tab=overview` on every reload. Reload and share URL now work correctly for all tabs. (adrianbj, PR #6)
+- **Added `scanner_404` bot rule and `bot404ShowBots` setting (PR #5).** The existing `ua_fleet` and `ip_excessive` rules miss a common attack pattern: recon scanners that probe one missing path per IP in a short burst — well below both thresholds. A new Rule 3 (`scanner_404`) flags any session whose *only* hit is a 404. Real users almost always take a second action after a 404 (back button, retry, follow a suggestion link), producing a multi-hit session; a session with exactly one 404 hit is an overwhelmingly reliable scanner signal. A new `bot404ShowBots` module setting (default **off**) controls whether the 404 panel includes bot-flagged sessions. Off by default for consistency with all other panels; admins who want scanner-probe visibility for attack-path analysis can opt in. (adrianbj, PR #5)

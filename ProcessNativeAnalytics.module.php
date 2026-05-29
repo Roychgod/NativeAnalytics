@@ -6,7 +6,7 @@ class ProcessNativeAnalytics extends Process {
         return [
             'title' => 'NativeAnalytics Dashboard',
             'summary' => 'Dashboard for the NativeAnalytics module.',
-            'version' => 1025,
+            'version' => 1026,
             'author' => 'Pyxios - Roych (www.pyxios.com)',
             'permission' => 'nativeanalytics-view',
             'icon' => 'area-chart',
@@ -262,7 +262,7 @@ public function ___execute() {
     $overviewContent .= '<div class="pwna-panel"><h2>Traffic by hour</h2><p class="pwna-note">Hover a point to see the hour, views, uniques and sessions for the last day in the selected range.</p>' . $analytics->renderLineChart($hourlySeries, 'views', 'Traffic by hour for selected day') . '</div>';
     $overviewContent .= '</div>';
     $overviewContent .= '<div class="pwna-grid-2">';
-    $overviewContent .= $this->renderSimpleTable('Top pages', ['Page', 'Views', 'Uniques', 'Sessions'], $this->mapTopPages($pages));
+    $overviewContent .= $this->renderSimpleTable('Top pages', ['Page', 'Views', 'Uniques', 'Sessions'], $this->mapTopPages($pages), true);
     $overviewContent .= $this->renderCurrentVisitorsPanel($analytics, $currentVisitors, (int) $analytics->realtimeWindowMinutes);
     $overviewContent .= '</div>';
     $overviewContent .= '<div class="pwna-grid-2">';
@@ -276,8 +276,8 @@ public function ___execute() {
     $engagementMetricsContent = $this->renderEventCards($eventSummary, $eventFormSummary, $eventDownloadSummary, $eventContactSummary, $eventNavigationSummary);
     $engagementMetricsContent .= '<div class="pwna-panel"><h2>Engagement trend</h2><p class="pwna-note">Tracked actions over time for the selected period.</p>' . $analytics->renderLineChart($eventSeries, 'views', 'Tracked actions by day') . '</div>';
     $engagementMetricsContent .= '<div class="pwna-grid-2">';
-    $engagementMetricsContent .= $this->renderSimpleTable('Top tracked actions', ['Action', 'Events', 'Unique visitors', 'Sessions'], $this->mapEventRows($topEvents));
-    $engagementMetricsContent .= $this->renderSimpleTable('Top action targets', ['Target', 'Group', 'Events', 'Sessions'], $this->mapEventTargetRows($topEventTargets));
+    $engagementMetricsContent .= $this->renderSimpleTable('Top tracked actions', ['Action', 'Events', 'Unique visitors', 'Sessions'], $this->mapEventRows($topEvents), true);
+    $engagementMetricsContent .= $this->renderSimpleTable('Top action targets', ['Target', 'Group', 'Events', 'Sessions'], $this->mapEventTargetRows($topEventTargets), true);
     $engagementMetricsContent .= '</div>';
     $engagementMetricsContent .= '<div class="pwna-grid-3">';
     $engagementMetricsContent .= $this->renderSimpleTable('Top form submits', ['Action', 'Events', 'Sessions'], $this->mapEventRowsCompact($topForms));
@@ -302,12 +302,12 @@ public function ___execute() {
 
     $sourcesContent = $this->renderToolbar($rangeMeta, $pageId, $template, $templates, 'sources');
     $sourcesContent .= '<div class="pwna-grid-2">';
-    $sourcesContent .= $this->renderSimpleTable('Top referrers', ['Referrer', 'Views'], $this->mapGenericRows($referrers, 'referrer_host'));
+    $sourcesContent .= $this->renderSimpleTable('Top referrers', ['Referrer', 'Views'], $this->mapGenericRows($referrers, 'referrer_host'), true);
     $sourcesContent .= $this->renderSimpleTable('Internal search terms', ['Search term', 'Views'], $this->mapGenericRows($searchTerms, 'search_term'));
     $sourcesContent .= '</div>';
     $sourcesContent .= '<div class="pwna-grid-2">';
     $sourcesContent .= $this->renderSimpleTable('Campaigns / UTM traffic', ['Campaign', 'Views', 'Uniques', 'Sessions'], $this->mapCampaignRows($campaigns));
-    $sourcesContent .= $this->renderSimpleTable('404 pages', ['Missing path', 'Hits', 'Unique visitors'], $this->map404Rows($top404));
+    $sourcesContent .= $this->renderSimpleTable('404 pages', ['Missing path', 'Hits', 'Unique visitors'], $this->map404Rows($top404), true);
     $sourcesContent .= '</div>';
 
     $techContent = $this->renderToolbar($rangeMeta, $pageId, $template, $templates, 'tech');
@@ -346,6 +346,8 @@ public function ___execute() {
     }
 
     $out .= $this->renderChartTooltipScript();
+    $out .= $this->renderTableSearchScript();
+    $out .= $this->renderExportDropdownScript();
     $out .= $this->renderHelperToolsScript();
     $out .= $this->renderAutoRefreshScript($rangeMeta, (int) $analytics->realtimeWindowMinutes, $pageId, $template);
     if($wireTabs) $out .= $this->renderWireTabsScript($activeTab, $engagementView);
@@ -359,21 +361,37 @@ public function ___execute() {
         $rangeMeta = $this->getRangeMeta($analytics);
         $pageId = (int) $this->input->get('page_id');
         $template = $this->sanitizer->name($this->input->get('template'));
+        $exportType = $this->sanitizer->name($this->input->get('export_type') ?: 'pages');
         $filters = [];
         if($pageId > 0) $filters['page_id'] = $pageId;
         if($template !== '') $filters['template'] = $template;
 
-        $rows = $analytics->getTopPages($rangeMeta['rangeSpec'], 500, $filters);
         $fp = fopen('php://temp', 'r+');
         fputcsv($fp, ['range', $rangeMeta['label']], ',', '"', '\\');
-        fputcsv($fp, ['page_id', 'title', 'template', 'path', 'views', 'uniques', 'sessions'], ',', '"', '\\');
-        foreach($rows as $row) {
-            fputcsv($fp, [$row['page_id'], $row['page_title'], $row['template'], $row['path'], $row['views'], $row['uniques'], $row['sessions']], ',', '"', '\\');
+
+        if($exportType === 'referrers') {
+            $rows = $analytics->getTopReferrers($rangeMeta['rangeSpec'], 500, $filters);
+            fputcsv($fp, ['referrer', 'views'], ',', '"', '\\');
+            foreach($rows as $row) fputcsv($fp, [$row['referrer_host'], $row['views']], ',', '"', '\\');
+        } elseif($exportType === '404s') {
+            $rows = $analytics->getTop404Paths($rangeMeta['rangeSpec'], 500);
+            fputcsv($fp, ['path', 'hits', 'unique_visitors'], ',', '"', '\\');
+            foreach($rows as $row) fputcsv($fp, [$row['path'], $row['views'], $row['uniques']], ',', '"', '\\');
+        } elseif($exportType === 'events') {
+            $rows = $analytics->getTopEvents($rangeMeta['rangeSpec'], 500, $filters);
+            fputcsv($fp, ['event_name', 'event_group', 'event_label', 'events', 'unique_visitors', 'sessions'], ',', '"', '\\');
+            foreach($rows as $row) fputcsv($fp, [$row['event_name'], $row['event_group'], $row['event_label'], $row['events'], $row['uniques'], $row['sessions']], ',', '"', '\\');
+        } else {
+            // Default: pages
+            $rows = $analytics->getTopPages($rangeMeta['rangeSpec'], 500, $filters);
+            fputcsv($fp, ['page_id', 'title', 'template', 'path', 'views', 'uniques', 'sessions'], ',', '"', '\\');
+            foreach($rows as $row) fputcsv($fp, [$row['page_id'], $row['page_title'], $row['template'], $row['path'], $row['views'], $row['uniques'], $row['sessions']], ',', '"', '\\');
         }
+
         rewind($fp);
         $csv = stream_get_contents($fp);
         fclose($fp);
-        $this->sendDownloadResponse((string) $csv, 'text/csv; charset=utf-8', 'native-analytics-' . date('Ymd-His') . '.csv');
+        $this->sendDownloadResponse((string) $csv, 'text/csv; charset=utf-8', 'native-analytics-' . $exportType . '-' . date('Ymd-His') . '.csv');
     }
 
     public function ___executePdf() {
@@ -831,9 +849,21 @@ protected function renderToolbar(array $rangeMeta, $pageId, $template, array $te
     $out .= '<button class="ui-button" type="submit">Apply</button></div>';
     $out .= '<div class="pwna-toolbar-right"><div class="pwna-export-actions">';
     $out .= '<button class="pwna-secondary-btn pwna-refresh-btn" type="submit">Refresh now</button>';
-    $out .= '<a class="pwna-secondary-btn pwna-export-btn" href="' . $this->sanitizer->entities($csvUrl) . '">Export CSV</a>';
-    $out .= '<a class="pwna-secondary-btn pwna-export-btn" href="' . $this->sanitizer->entities($pdfUrl) . '">Export PDF</a>';
-    $out .= '<a class="pwna-secondary-btn pwna-export-btn" href="' . $this->sanitizer->entities($docxUrl) . '">Export DOCX</a>';
+    $ddId = 'pwna-export-dd-' . $this->sanitizer->name($activeTab);
+    $menuId = $ddId . '-menu';
+    $out .= '<div class="pwna-export-dropdown" id="' . $ddId . '">';
+    $out .= '<button type="button" class="pwna-secondary-btn pwna-export-dropdown-btn" aria-haspopup="true" aria-expanded="false" aria-controls="' . $menuId . '">Export</button>';
+    $out .= '<div class="pwna-export-dropdown-menu" id="' . $menuId . '" role="menu">';
+    $out .= '<span class="pwna-export-dropdown-label">Full report</span>';
+    $out .= '<a href="' . $this->sanitizer->entities($pdfUrl) . '" role="menuitem">Export PDF (all data)</a>';
+    $out .= '<a href="' . $this->sanitizer->entities($docxUrl) . '" role="menuitem">Export DOCX (all data)</a>';
+    $out .= '<div class="pwna-export-dropdown-divider"></div>';
+    $out .= '<span class="pwna-export-dropdown-label">CSV by section</span>';
+    $out .= '<a href="' . $this->sanitizer->entities($csvUrl) . '" role="menuitem">Pages CSV</a>';
+    $out .= '<a href="' . $this->sanitizer->entities($csvUrl . '&export_type=referrers') . '" role="menuitem">Referrers CSV</a>';
+    $out .= '<a href="' . $this->sanitizer->entities($csvUrl . '&export_type=404s') . '" role="menuitem">404 pages CSV</a>';
+    $out .= '<a href="' . $this->sanitizer->entities($csvUrl . '&export_type=events') . '" role="menuitem">Events CSV</a>';
+    $out .= '</div></div>';
     $out .= '</div></div>';
     $out .= '</div>';
     $out .= '<div class="pwna-toolbar-meta">';
@@ -880,9 +910,16 @@ protected function renderCompareToolbar(array $rangeMeta, array $compareMeta, $p
     $out .= '<button class="ui-button" type="submit">Apply comparison</button></div>';
     $out .= '<div class="pwna-toolbar-right"><div class="pwna-export-actions">';
     $out .= '<button class="pwna-secondary-btn pwna-refresh-btn" type="submit">Refresh now</button>';
-    $out .= '<a class="pwna-secondary-btn pwna-export-btn" href="' . $this->sanitizer->entities($csvUrl) . '">Export CSV</a>';
-    $out .= '<a class="pwna-secondary-btn pwna-export-btn" href="' . $this->sanitizer->entities($pdfUrl) . '">Export PDF</a>';
-    $out .= '<a class="pwna-secondary-btn pwna-export-btn" href="' . $this->sanitizer->entities($docxUrl) . '">Export DOCX</a>';
+    $out .= '<div class="pwna-export-dropdown" id="pwna-export-dd-compare">';
+    $out .= '<button type="button" class="pwna-secondary-btn pwna-export-dropdown-btn" aria-haspopup="true" aria-expanded="false" aria-controls="pwna-export-dd-compare-menu">Export</button>';
+    $out .= '<div class="pwna-export-dropdown-menu" id="pwna-export-dd-compare-menu" role="menu">';
+    $out .= '<span class="pwna-export-dropdown-label">Full report</span>';
+    $out .= '<a href="' . $this->sanitizer->entities($pdfUrl) . '" role="menuitem">Export PDF (all data)</a>';
+    $out .= '<a href="' . $this->sanitizer->entities($docxUrl) . '" role="menuitem">Export DOCX (all data)</a>';
+    $out .= '<div class="pwna-export-dropdown-divider"></div>';
+    $out .= '<span class="pwna-export-dropdown-label">CSV by section</span>';
+    $out .= '<a href="' . $this->sanitizer->entities($csvUrl) . '" role="menuitem">Pages CSV</a>';
+    $out .= '</div></div>';
     $out .= '</div></div>';
     $out .= '</div>';
     $out .= '<div class="pwna-toolbar-meta">';
@@ -1078,26 +1115,11 @@ protected function renderWireTabsScript($activeTab, $engagementView) {
       setTimeout(tryActivate, 300);
     }
   }
-  function getActiveSlug(rootSelector, cfg) {
-    var $root = $(rootSelector);
-    if(!$root.length) return '';
-    var $active = $root.find('ul.WireTabs li.ui-tabs-active a, ul.ui-tabs-nav li.ui-tabs-active a, .WireTabsNav li.ui-tabs-active a, ul.WireTabs li.ui-state-active a, ul.ui-tabs-nav li.ui-state-active a').first();
-    if(!$active.length) {
-      $active = getNavAnchors(rootSelector, cfg).filter(function(){
-        var $a = $(this);
-        return $a.attr('aria-selected') === 'true' || $a.parent().hasClass('ui-tabs-active') || $a.parent().hasClass('ui-state-active');
-      }).first();
-    }
-    if(!$active.length) return '';
-    return slugFromLabel(cfg, $active.text());
-  }
-  function syncMainTabState(rootSelector, cfg, fallbackSlug) {
-    var slug = getActiveSlug(rootSelector, cfg) || fallbackSlug || 'overview';
+  function writeTabState(cfg, slug) {
     var label = (cfg.labels && cfg.labels[slug]) ? cfg.labels[slug] : 'Overview';
     writeStored(cfg.storageKey, label);
     updateUrlParam('tab', slug);
     if(slug !== 'engagement') updateUrlParam('engage_view', '');
-    return slug;
   }
   $(document).ready(function(){
     var cfg = __PWNA_JSON__ || {};
@@ -1112,6 +1134,33 @@ protected function renderWireTabsScript($activeTab, $engagementView) {
 
     activateBySlug('#pwna-wiretabs', cfg, preferredSlug);
 
+    // Gate URL writes until after the initial WireTabs widget-creation fires.
+    // jQuery UI fires tabsactivate once during init for the default tab — we
+    // must not write that to the URL before activateBySlug switches to the
+    // URL-requested tab.
+    var initialTabActivated = false;
+    var initTimer = setTimeout(function(){ initialTabActivated = true; }, 2000);
+
+    // Primary URL-sync: jQuery UI's tabsactivate fires AFTER the new tab is
+    // fully active and exposes ui.newTab directly — no DOM-polling race.
+    $('#pwna-wiretabs').on('tabsactivate', function(event, ui){
+      var $a = ui.newTab ? ui.newTab.find('a').first() : $();
+      var slug = slugFromLabel(cfg, $a.text());
+      if(!slug) return;
+      if(!initialTabActivated) {
+        // The URL-requested tab just activated — open the gate.
+        if(slug === preferredSlug) {
+          initialTabActivated = true;
+          clearTimeout(initTimer);
+        }
+        return;
+      }
+      writeTabState(cfg, slug);
+    });
+
+    // Defensive fallback for non-jQuery-UI implementations: filter to real
+    // user events only (event.originalEvent is undefined for .trigger() calls,
+    // which covers WireTabs init clicks and activateBySlug's own trigger).
     function bindNav() {
       var $links = getNavAnchors('#pwna-wiretabs', cfg);
       if(!$links.length) return false;
@@ -1119,14 +1168,10 @@ protected function renderWireTabsScript($activeTab, $engagementView) {
         var $link = $(this);
         if($link.data('pwnaTabBound')) return;
         $link.data('pwnaTabBound', 1);
-        $link.on('click', function(){
+        $link.on('click', function(e){
+          if(!e.originalEvent) return; // programmatic click — ignore
           var clickedSlug = slugFromLabel(cfg, $link.text()) || preferredSlug || 'overview';
-          setTimeout(function(){
-            syncMainTabState('#pwna-wiretabs', cfg, clickedSlug);
-          }, 0);
-          setTimeout(function(){
-            syncMainTabState('#pwna-wiretabs', cfg, clickedSlug);
-          }, 80);
+          writeTabState(cfg, clickedSlug);
         });
       });
       return true;
@@ -1137,13 +1182,6 @@ protected function renderWireTabsScript($activeTab, $engagementView) {
       setTimeout(bindNav, 180);
       setTimeout(bindNav, 320);
     }
-
-    setTimeout(function(){ syncMainTabState('#pwna-wiretabs', cfg, preferredSlug); }, 60);
-    setTimeout(function(){ syncMainTabState('#pwna-wiretabs', cfg, preferredSlug); }, 220);
-
-    $(window).on('pagehide beforeunload', function(){
-      syncMainTabState('#pwna-wiretabs', cfg, preferredSlug);
-    });
   });
 })(window.jQuery);
 </script>
@@ -1725,13 +1763,16 @@ protected function renderHelpIcon($text, $label = 'Help', $extraClass = '') {
     }
 
     protected function renderCards(array $summary, array $current, array $summary404, array $quality) {
+        $avgTime = (int) ($quality['avg_time_on_page'] ?? 0);
+        $avgTimeLabel = $avgTime > 0 ? ($avgTime >= 60 ? floor($avgTime / 60) . 'm ' . ($avgTime % 60) . 's' : $avgTime . 's') : '—';
         $cards = [
             ['Views', number_format((int) ($summary['views'] ?? 0)), 'views'],
             ['Unique visitors', number_format((int) ($summary['uniques'] ?? 0)), 'uniques'],
             ['Sessions', number_format((int) ($summary['sessions'] ?? 0)), 'sessions'],
             ['Avg pages / session', number_format((float) ($quality['avg_pages_per_session'] ?? 0), 2), 'avg_pages_per_session'],
             ['Single-page rate', number_format((float) ($quality['single_page_rate'] ?? 0), 1) . '%', 'single_page_rate'],
-            ['Current visitors', number_format((int) ($current['current_visitors'] ?? 0)), 'current_visitors'],
+            ['Avg active time / session', $avgTimeLabel, 'avg_time_on_page'],
+            ['Current visitors', number_format((int) ($current['current_uniques'] ?? $current['current_visitors'] ?? 0)), 'current_visitors'],
             ['404 hits', number_format((int) ($summary404['views'] ?? 0)), 'hits_404'],
         ];
         $out = '<div class="pwna-cards">';
@@ -1807,28 +1848,36 @@ protected function renderHelpIcon($text, $label = 'Help', $extraClass = '') {
                     . '<button type="submit" class="pwna-secondary-btn" title="Block this visitor IP (hash: ' . $this->sanitizer->entities($hashShort) . '…)" style="padding:2px 8px;font-size:11px;">Block</button>'
                     . '</form>';
             }
-            $mapped[] = [
+            $rowCells = [
                 $pageLabel,
                 $this->sanitizer->entities((string) $row['device_type']),
                 $this->sanitizer->entities((string) $row['browser']),
                 $this->sanitizer->entities($this->formatDateTime($analytics, $row['last_seen_at'])),
-                $actionCell,
             ];
+            if($canBlock) $rowCells[] = $actionCell;
+            $mapped[] = $rowCells;
         }
-        $headers = ['Page', 'Device', 'Browser', 'Last seen', $canBlock ? 'Action' : ''];
+        $headers = ['Page', 'Device', 'Browser', 'Last seen'];
+        if($canBlock) $headers[] = 'Action';
         $out .= '<div id="pwna-current-body">' . $this->renderSimpleTableBodyOnly($headers, $mapped) . '</div>';
         $out .= '</div>';
         return $out;
     }
 
-    protected function renderSimpleTable($title, array $headers, array $rows) {
+    protected function renderSimpleTable($title, array $headers, array $rows, $searchable = false) {
         $out = '<div class="pwna-panel"><h2>' . $this->sanitizer->entities($title) . '</h2>';
         if(!$rows) return $out . '<p class="pwna-empty">No data yet.</p></div>';
+        if($searchable && count($rows) > 10) {
+            $uid = 'pwna-search-' . substr(md5($title), 0, 8);
+            $out .= '<div class="pwna-table-search-wrap"><input type="search" class="pwna-table-search" data-pwna-table="' . $uid . '" placeholder="Filter ' . $this->sanitizer->entities(strtolower($title)) . '…" aria-label="Filter table"></div>';
+            return $out . $this->renderSimpleTableBodyOnly($headers, $rows, $uid) . '</div>';
+        }
         return $out . $this->renderSimpleTableBodyOnly($headers, $rows) . '</div>';
     }
 
-    protected function renderSimpleTableBodyOnly(array $headers, array $rows) {
-        $out = '<div class="pwna-table-wrap"><table class="pwna-table"><thead><tr>';
+    protected function renderSimpleTableBodyOnly(array $headers, array $rows, $tableId = '') {
+        $idAttr = $tableId ? ' id="' . $this->sanitizer->entities($tableId) . '"' : '';
+        $out = '<div class="pwna-table-wrap"><table class="pwna-table"' . $idAttr . '><thead><tr>';
         foreach($headers as $header) $out .= '<th>' . $this->sanitizer->entities($header) . '</th>';
         $out .= '</tr></thead><tbody>';
         foreach($rows as $row) {
@@ -1839,6 +1888,83 @@ protected function renderHelpIcon($text, $label = 'Help', $extraClass = '') {
         $out .= '</tbody></table></div>';
         return $out;
     }
+
+protected function renderTableSearchScript() {
+    $nonce = $this->getScriptNonceAttribute();
+    return '<script' . $nonce . '>(function(){
+function initSearch(input) {
+  if(input.dataset.pwnaSearchInit === "1") return;
+  input.dataset.pwnaSearchInit = "1";
+  var tableId = input.getAttribute("data-pwna-table");
+  var table = tableId ? document.getElementById(tableId) : null;
+  if(!table) return;
+  input.addEventListener("input", function() {
+    var q = input.value.toLowerCase().trim();
+    var rows = table.querySelectorAll("tbody tr");
+    var shown = 0;
+    rows.forEach(function(row) {
+      var text = row.textContent.toLowerCase();
+      var match = !q || text.indexOf(q) !== -1;
+      row.style.display = match ? "" : "none";
+      if(match) shown++;
+    });
+    // Show "no results" row if all hidden
+    var noResults = table.querySelector("tr.pwna-no-results");
+    if(!noResults) {
+      noResults = document.createElement("tr");
+      noResults.className = "pwna-no-results";
+      var td = document.createElement("td");
+      td.colSpan = table.querySelectorAll("thead th").length || 99;
+      td.style.cssText = "text-align:center;padding:12px;color:#888;font-style:italic";
+      td.textContent = "No results match your search.";
+      noResults.appendChild(td);
+      table.querySelector("tbody").appendChild(noResults);
+    }
+    noResults.style.display = (q && shown === 0) ? "" : "none";
+  });
+}
+function init() {
+  document.querySelectorAll(".pwna-table-search").forEach(initSearch);
+}
+if(document.readyState === "loading") { document.addEventListener("DOMContentLoaded", init); } else { init(); }
+})();</script>';
+}
+
+protected function renderExportDropdownScript() {
+    $nonce = $this->getScriptNonceAttribute();
+    return '<script' . $nonce . '>(function(){
+function init() {
+  document.querySelectorAll(".pwna-export-dropdown").forEach(function(dd) {
+    if(dd.dataset.pwnaDropInit === "1") return;
+    dd.dataset.pwnaDropInit = "1";
+    var btn = dd.querySelector(".pwna-export-dropdown-btn");
+    if(!btn) return;
+    btn.addEventListener("click", function(e) {
+      e.stopPropagation();
+      var open = dd.classList.toggle("is-open");
+      btn.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+  });
+  document.addEventListener("click", function() {
+    document.querySelectorAll(".pwna-export-dropdown.is-open").forEach(function(dd) {
+      dd.classList.remove("is-open");
+      var btn = dd.querySelector(".pwna-export-dropdown-btn");
+      if(btn) btn.setAttribute("aria-expanded", "false");
+    });
+  });
+  document.addEventListener("keydown", function(e) {
+    if(e.key === "Escape") {
+      document.querySelectorAll(".pwna-export-dropdown.is-open").forEach(function(dd) {
+        dd.classList.remove("is-open");
+        var btn = dd.querySelector(".pwna-export-dropdown-btn");
+        if(btn) { btn.setAttribute("aria-expanded", "false"); btn.focus(); }
+      });
+    }
+  });
+}
+if(document.readyState === "loading") { document.addEventListener("DOMContentLoaded", init); } else { init(); }
+})();</script>';
+}
 
 protected function renderChartTooltipScript() {
     return '<script' . $this->getScriptNonceAttribute() . '>(function(){function init(){document.querySelectorAll(".pwna-chart-wrap").forEach(function(wrap){var tip=wrap.querySelector(".pwna-chart-tooltip");if(!tip||wrap.dataset.pwnaTipInit==="1")return;wrap.dataset.pwnaTipInit="1";var dayEl=tip.querySelector(".pwna-chart-tooltip-day");var timeEl=tip.querySelector(".pwna-chart-tooltip-time");var viewsEl=tip.querySelector("[data-pwna-tip=views]");var uniquesEl=tip.querySelector("[data-pwna-tip=uniques]");var sessionsEl=tip.querySelector("[data-pwna-tip=sessions]");var compareWrap=tip.querySelector(".pwna-chart-tooltip-compare");var compareDay=tip.querySelector("[data-pwna-tip=compare-day]");var compareViews=tip.querySelector("[data-pwna-tip=compare-views]");var compareUniques=tip.querySelector("[data-pwna-tip=compare-uniques]");var compareSessions=tip.querySelector("[data-pwna-tip=compare-sessions]");function place(ev){var rect=wrap.getBoundingClientRect();var x=(ev.clientX-rect.left)+14;var y=(ev.clientY-rect.top)-12;var maxX=Math.max(8, rect.width-tip.offsetWidth-8);var maxY=Math.max(8, rect.height-tip.offsetHeight-8);tip.style.left=Math.max(8, Math.min(x, maxX))+"px";tip.style.top=Math.max(8, Math.min(y, maxY))+"px";}function activate(point,ev){wrap.querySelectorAll(".pwna-point.is-active").forEach(function(el){el.classList.remove("is-active");});point.classList.add("is-active");dayEl.textContent=point.getAttribute("data-label")||"";var timeText=point.getAttribute("data-time")||"";timeEl.textContent=timeText;timeEl.hidden=!timeText;viewsEl.textContent=point.getAttribute("data-views")||"0";uniquesEl.textContent=point.getAttribute("data-uniques")||"0";sessionsEl.textContent=point.getAttribute("data-sessions")||"0";var hasCompare=point.hasAttribute("data-compare-label");if(compareWrap){compareWrap.hidden=!hasCompare;if(hasCompare){compareDay.textContent=point.getAttribute("data-compare-label")||"";compareViews.textContent=point.getAttribute("data-compare-views")||"0";compareUniques.textContent=point.getAttribute("data-compare-uniques")||"0";compareSessions.textContent=point.getAttribute("data-compare-sessions")||"0";}}tip.hidden=false;place(ev);}wrap.querySelectorAll(".pwna-point").forEach(function(point){point.addEventListener("mouseenter", function(ev){activate(point,ev);});point.addEventListener("mousemove", function(ev){place(ev);});});wrap.addEventListener("mouseleave", function(){wrap.querySelectorAll(".pwna-point.is-active").forEach(function(el){el.classList.remove("is-active");});tip.hidden=true;});});}if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded", init);}else{init();}})();</script>';
@@ -1856,6 +1982,7 @@ protected function renderChartTooltipScript() {
             'minutes' => (int) $minutes,
             'pageId' => (int) $pageId,
             'template' => (string) $template,
+            'canBlock' => $this->user->hasPermission('nativeanalytics-manage'),
         ];
         $json = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
         if($json === false) $json = '{}';
@@ -1890,7 +2017,12 @@ protected function renderChartTooltipScript() {
     setText('[data-pwna-card=sessions]', fmt(data.summary && data.summary.sessions));
     setText('[data-pwna-card=avg_pages_per_session]', fmt(data.sessionQuality && data.sessionQuality.avg_pages_per_session, 2));
     setText('[data-pwna-card=single_page_rate]', fmt(data.sessionQuality && data.sessionQuality.single_page_rate, 1, '%'));
-    setText('[data-pwna-card=current_visitors]', fmt(data.current && data.current.current_visitors));
+    (function(){
+      var secs = data.sessionQuality && data.sessionQuality.avg_time_on_page ? parseInt(data.sessionQuality.avg_time_on_page, 10) : 0;
+      var label = secs > 0 ? (secs >= 60 ? Math.floor(secs/60) + 'm ' + (secs%60) + 's' : secs + 's') : '\u2014';
+      setText('[data-pwna-card=avg_time_on_page]', label);
+    }());
+    setText('[data-pwna-card=current_visitors]', fmt(data.current && (data.current.current_uniques || data.current.current_visitors)));
     setText('[data-pwna-card=hits_404]', fmt(data.summary404 && data.summary404.views));
     setText('#pwna-health-hits', fmt(data.health && data.health.hits_count));
     setText('#pwna-health-sessions', fmt(data.health && data.health.sessions_count));
@@ -1901,6 +2033,7 @@ protected function renderChartTooltipScript() {
     setText('#pwna-health-last-event', (data.health && data.health.last_event_at) || '—');
   }
   function renderCurrent(rows) {
+    if(cfg.canBlock) return; // server-rendered with Action column; don't overwrite
     var note = document.getElementById('pwna-current-note');
     if(note) note.textContent = 'Active in the last ' + cfg.minutes + ' minutes.';
     var wrap = document.getElementById('pwna-current-body');

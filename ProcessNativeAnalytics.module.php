@@ -863,6 +863,7 @@ protected function renderToolbar(array $rangeMeta, $pageId, $template, array $te
     $out .= '<label>From <input type="date" name="from_date" value="' . $this->sanitizer->entities($rangeMeta['fromDate']) . '"></label>';
     $out .= '<label>To <input type="date" name="to_date" value="' . $this->sanitizer->entities($rangeMeta['toDate']) . '"></label>';
     $out .= '<label>Page ID <input type="number" min="1" name="page_id" value="' . ($pageId > 0 ? (int) $pageId : '') . '"></label>';
+    $out .= '<label class="pwna-pagefind">Find page <input type="text" autocomplete="off" placeholder="Search title or path" data-pwna-pagesearch="1"><div class="pwna-pagefind-results" data-pwna-pagesearch-results hidden></div></label>';
     $out .= '<label>Template <select name="template"><option value="">All templates</option>';
     foreach($templates as $row) {
         $value = $row['label'];
@@ -893,6 +894,7 @@ protected function renderToolbar(array $rangeMeta, $pageId, $template, array $te
     $out .= '<div class="pwna-toolbar-status"><span class="pwna-note">Range: ' . $this->sanitizer->entities($rangeMeta['label']) . '</span></div>';
     $out .= '</div>';
     $out .= '</form>';
+    $out .= $this->renderPageSearchScript();
     return $out;
 }
 
@@ -924,6 +926,7 @@ protected function renderCompareToolbar(array $rangeMeta, array $compareMeta, $p
     }
     $out .= '</select></label>';
     $out .= '<label>Page ID <input type="number" min="1" name="page_id" value="' . ($pageId > 0 ? (int) $pageId : '') . '"></label>';
+    $out .= '<label class="pwna-pagefind">Find page <input type="text" autocomplete="off" placeholder="Search title or path" data-pwna-pagesearch="1"><div class="pwna-pagefind-results" data-pwna-pagesearch-results hidden></div></label>';
     $out .= '<label>Template <select name="template"><option value="">All templates</option>';
     foreach($templates as $row) {
         $value = $row['label'];
@@ -962,6 +965,7 @@ protected function renderCompareToolbar(array $rangeMeta, array $compareMeta, $p
     $out .= '</div>';
     $out .= '</div>';
     $out .= '</form>';
+    $out .= $this->renderPageSearchScript();
     return $out;
 }
 

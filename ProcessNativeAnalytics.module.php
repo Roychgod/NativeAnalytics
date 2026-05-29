@@ -350,6 +350,7 @@ public function ___execute() {
     $out .= $this->renderExportDropdownScript();
     $out .= $this->renderHelperToolsScript();
     $out .= $this->renderAutoRefreshScript($rangeMeta, (int) $analytics->realtimeWindowMinutes, $pageId, $template);
+    $out .= $this->renderPageSearchScript();
     if($wireTabs) $out .= $this->renderWireTabsScript($activeTab, $engagementView);
     $out .= '</div>';
     return $out;
@@ -894,7 +895,6 @@ protected function renderToolbar(array $rangeMeta, $pageId, $template, array $te
     $out .= '<div class="pwna-toolbar-status"><span class="pwna-note">Range: ' . $this->sanitizer->entities($rangeMeta['label']) . '</span></div>';
     $out .= '</div>';
     $out .= '</form>';
-    $out .= $this->renderPageSearchScript();
     return $out;
 }
 
@@ -965,7 +965,6 @@ protected function renderCompareToolbar(array $rangeMeta, array $compareMeta, $p
     $out .= '</div>';
     $out .= '</div>';
     $out .= '</form>';
-    $out .= $this->renderPageSearchScript();
     return $out;
 }
 
@@ -2151,7 +2150,8 @@ HTML;
       function search(q){
         if(controller && controller.abort) controller.abort();
         controller = (window.AbortController) ? new AbortController() : null;
-        var opts = controller ? { signal: controller.signal } : {};
+        var opts = { credentials: 'same-origin' };
+        if(controller) opts.signal = controller.signal;
         fetch(cfg.url + '?q=' + encodeURIComponent(q), opts)
           .then(function(r){ return r.ok ? r.json() : []; })
           .then(function(data){ render(data); })
@@ -2172,7 +2172,14 @@ HTML;
         hide();
       });
       input.addEventListener('keydown', function(ev){ if(ev.key==='Escape') hide(); });
-      document.addEventListener('click', function(ev){ if(label && !label.contains(ev.target)) hide(); });
+    });
+    document.addEventListener('click', function(ev){
+      document.querySelectorAll('.pwna-pagefind').forEach(function(lbl){
+        if(!lbl.contains(ev.target)){
+          var r = lbl.querySelector('[data-pwna-pagesearch-results]');
+          if(r){ r.hidden = true; r.innerHTML = ''; }
+        }
+      });
     });
   }
   if(document.readyState==='loading'){ document.addEventListener('DOMContentLoaded', init); } else { init(); }

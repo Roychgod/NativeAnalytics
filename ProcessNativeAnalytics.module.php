@@ -2107,6 +2107,81 @@ HTML;
         return str_replace(['__PWNA_NONCE__', '__PWNA_JSON__'], [$nonceAttr, $json], $script);
     }
 
+    protected function renderPageSearchScript() {
+        $payload = ['url' => './page-search/'];
+        $json = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
+        if($json === false) $json = '{}';
+        $nonceAttr = $this->getScriptNonceAttribute();
+        $script = <<<'HTML'
+<script__PWNA_NONCE__>
+(function(){
+  if(window.__pwnaPageSearchInit) return;
+  window.__pwnaPageSearchInit = true;
+  var cfg = __PWNA_JSON__;
+  if(!cfg || !cfg.url || !window.fetch) return;
+  function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]||c;});}
+  function init(){
+    document.querySelectorAll('[data-pwna-pagesearch]').forEach(function(input){
+      if(input.dataset.pwnaPagesearchReady==='1') return;
+      input.dataset.pwnaPagesearchReady='1';
+      var label = input.closest('label');
+      var results = label ? label.querySelector('[data-pwna-pagesearch-results]') : null;
+      var form = input.closest('form');
+      var pageIdInput = form ? form.querySelector('input[name=page_id]') : null;
+      if(!results || !pageIdInput) return;
+      var timer = null;
+      var controller = null;
+      function hide(){ results.hidden = true; results.innerHTML = ''; }
+      function render(items){
+        if(!items || !items.length){
+          results.innerHTML = '<div class="pwna-pagefind-empty">No matching pages</div>';
+          results.hidden = false;
+          return;
+        }
+        var html = '';
+        items.forEach(function(it){
+          html += '<button type="button" class="pwna-pagefind-item" data-id="' + esc(it.id) + '">' +
+                  '<span class="pwna-pagefind-title">' + esc(it.title || it.path) + '</span>' +
+                  '<span class="pwna-pagefind-path">' + esc(it.path) + ' (' + esc(it.views) + ')</span>' +
+                  '</button>';
+        });
+        results.innerHTML = html;
+        results.hidden = false;
+      }
+      function search(q){
+        if(controller && controller.abort) controller.abort();
+        controller = (window.AbortController) ? new AbortController() : null;
+        var opts = controller ? { signal: controller.signal } : {};
+        fetch(cfg.url + '?q=' + encodeURIComponent(q), opts)
+          .then(function(r){ return r.ok ? r.json() : []; })
+          .then(function(data){ render(data); })
+          .catch(function(){ /* aborted or failed: leave field usable */ });
+      }
+      input.addEventListener('input', function(){
+        var q = input.value.trim();
+        if(timer) clearTimeout(timer);
+        if(q.length < 2){ hide(); return; }
+        timer = setTimeout(function(){ search(q); }, 250);
+      });
+      results.addEventListener('click', function(ev){
+        var btn = ev.target.closest('.pwna-pagefind-item');
+        if(!btn) return;
+        pageIdInput.value = btn.getAttribute('data-id');
+        var title = btn.querySelector('.pwna-pagefind-title');
+        input.value = title ? title.textContent : '';
+        hide();
+      });
+      input.addEventListener('keydown', function(ev){ if(ev.key==='Escape') hide(); });
+      document.addEventListener('click', function(ev){ if(label && !label.contains(ev.target)) hide(); });
+    });
+  }
+  if(document.readyState==='loading'){ document.addEventListener('DOMContentLoaded', init); } else { init(); }
+})();
+</script>
+HTML;
+        return str_replace(['__PWNA_NONCE__', '__PWNA_JSON__'], [$nonceAttr, $json], $script);
+    }
+
     protected function mapTopPages(array $rows) {
         $mapped = [];
         foreach($rows as $row) {

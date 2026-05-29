@@ -3878,9 +3878,8 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             $primaryLabelText = (string) ($primary['label'] ?? ('Slot ' . ($i + 1)));
             $primaryTime = (string) ($primary['time_label'] ?? '');
             $compareLabelText = (string) ($compare['label'] ?? ('Slot ' . ($i + 1)));
-            $title = $primaryLabel . ': ' . $primaryLabelText . ' | ' . ucfirst($metric) . ': ' . $primaryValue . ' || ' . $secondaryLabel . ': ' . $compareLabelText . ' | ' . ucfirst($metric) . ': ' . $compareValue;
 
-            $circles[] = '<circle class="pwna-point" cx="' . $x . '" cy="' . $yPrimary . '" r="4" data-label="' . $sanitizer->entities($primaryLabelText) . '" data-time="' . $sanitizer->entities($primaryTime) . '" data-views="' . (int) ($primary['views'] ?? 0) . '" data-uniques="' . (int) ($primary['uniques'] ?? 0) . '" data-sessions="' . (int) ($primary['sessions'] ?? 0) . '" data-compare-label="' . $sanitizer->entities($secondaryLabel . ': ' . $compareLabelText) . '" data-compare-views="' . (int) ($compare['views'] ?? 0) . '" data-compare-uniques="' . (int) ($compare['uniques'] ?? 0) . '" data-compare-sessions="' . (int) ($compare['sessions'] ?? 0) . '"><title>' . $sanitizer->entities($title) . '</title></circle>';
+            $circles[] = '<circle class="pwna-point" cx="' . $x . '" cy="' . $yPrimary . '" r="4" data-label="' . $sanitizer->entities($primaryLabelText) . '" data-time="' . $sanitizer->entities($primaryTime) . '" data-views="' . (int) ($primary['views'] ?? 0) . '" data-uniques="' . (int) ($primary['uniques'] ?? 0) . '" data-sessions="' . (int) ($primary['sessions'] ?? 0) . '" data-compare-label="' . $sanitizer->entities($secondaryLabel . ': ' . $compareLabelText) . '" data-compare-views="' . (int) ($compare['views'] ?? 0) . '" data-compare-uniques="' . (int) ($compare['uniques'] ?? 0) . '" data-compare-sessions="' . (int) ($compare['sessions'] ?? 0) . '"></circle>';
         }
 
         $first = reset($primarySeries);
@@ -3937,9 +3936,8 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
 
             $label = (string) ($row['label'] ?? (isset($row['day']) ? $this->formatDisplayDate($row['day']) : ''));
             $timeLabel = (string) ($row['time_label'] ?? (isset($row['hour']) ? sprintf('%02d:00–%02d:59', (int) $row['hour'], (int) $row['hour']) : ''));
-            $title = trim($label . ' ' . $timeLabel) . ' | ' . $metricLabels['views'] . ': ' . (int) ($row['views'] ?? 0) . ' | ' . $metricLabels['uniques'] . ': ' . (int) ($row['uniques'] ?? 0) . ' | ' . $metricLabels['sessions'] . ': ' . (int) ($row['sessions'] ?? 0);
 
-            $circles[] = '<circle class="pwna-point" cx="' . $x . '" cy="' . $y . '" r="4" data-label="' . $sanitizer->entities($label) . '" data-time="' . $sanitizer->entities($timeLabel) . '" data-views="' . (int) ($row['views'] ?? 0) . '" data-uniques="' . (int) ($row['uniques'] ?? 0) . '" data-sessions="' . (int) ($row['sessions'] ?? 0) . '"><title>' . $sanitizer->entities($title) . '</title></circle>';
+            $circles[] = '<circle class="pwna-point" cx="' . $x . '" cy="' . $y . '" r="4" data-label="' . $sanitizer->entities($label) . '" data-time="' . $sanitizer->entities($timeLabel) . '" data-views="' . (int) ($row['views'] ?? 0) . '" data-uniques="' . (int) ($row['uniques'] ?? 0) . '" data-sessions="' . (int) ($row['sessions'] ?? 0) . '"></circle>';
         }
 
         $first = reset($series);

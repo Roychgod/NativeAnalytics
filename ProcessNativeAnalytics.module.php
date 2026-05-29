@@ -415,6 +415,14 @@ public function ___execute() {
         $this->sendDownloadResponse($docx, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'native-analytics-report-' . date('Ymd-His') . '.docx');
     }
 
+    public function ___executePageSearch() {
+        /** @var NativeAnalytics $analytics */
+        $analytics = $this->modules->get('NativeAnalytics');
+        $term = $this->sanitizer->text($this->input->get('q'));
+        $results = $analytics->searchPagesWithData($term, 10);
+        $this->sendJsonResponse($results);
+    }
+
     protected function sendDownloadResponse($content, $contentType, $filename) {
         if(function_exists('session_write_close')) @session_write_close();
         while(ob_get_level() > 0) {
@@ -427,6 +435,21 @@ public function ___execute() {
         header('Pragma: public');
         header('X-Content-Type-Options: nosniff');
         echo $content;
+        exit;
+    }
+
+    protected function sendJsonResponse($data) {
+        if(function_exists('session_write_close')) @session_write_close();
+        while(ob_get_level() > 0) {
+            @ob_end_clean();
+        }
+        $json = json_encode($data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        if($json === false) $json = '[]';
+        header('Content-Type: application/json; charset=utf-8');
+        header('Content-Length: ' . strlen($json));
+        header('Cache-Control: private, no-store');
+        header('X-Content-Type-Options: nosniff');
+        echo $json;
         exit;
     }
 

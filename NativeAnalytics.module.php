@@ -1,4 +1,5 @@
 <?php namespace ProcessWire;
+require_once __DIR__ . '/lib/like-escape.php';
 
 class NativeAnalytics extends WireData implements Module, ConfigurableModule {
 
@@ -3102,6 +3103,43 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         foreach($rows as &$row) $row = $this->normalizeAnalyticsRowForDisplay($row);
         unset($row);
         return $rows;
+    }
+
+    /**
+     * Search pages that have recorded analytics data, matching the term against
+     * stored page title or path. Returns up to $limit pages ordered by views.
+     * Only includes rows with a real ProcessWire page id (page_id > 0).
+     *
+     * @return array<int,array{id:int,title:string,path:string,views:int}>
+     */
+    public function searchPagesWithData($term, $limit = 10) {
+        $term = trim((string) $term);
+        if(function_exists('mb_strlen')) {
+            if(mb_strlen($term) < 2) return [];
+        } elseif(strlen($term) < 2) {
+            return [];
+        }
+        $limit = max(1, min(50, (int) $limit));
+        $like = '%' . pwna_escape_like_term($term) . '%';
+        $sql = "SELECT page_id, MAX(page_title) AS page_title, MAX(path) AS path, COUNT(*) AS views
+                FROM `" . self::HITS_TABLE . "`
+                WHERE page_id > 0 AND (page_title LIKE :likeTitle OR path LIKE :likePath)
+                GROUP BY page_id
+                ORDER BY views DESC
+                LIMIT " . (int) $limit;
+        $stmt = $this->wire('database')->prepare($sql);
+        $stmt->execute([':likeTitle' => $like, ':likePath' => $like]);
+        $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC) ?: [];
+        $out = [];
+        foreach($rows as $row) {
+            $out[] = [
+                'id' => (int) $row['page_id'],
+                'title' => (string) $row['page_title'],
+                'path' => (string) $row['path'],
+                'views' => (int) $row['views'],
+            ];
+        }
+        return $out;
     }
 
 

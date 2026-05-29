@@ -3353,11 +3353,12 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
 
     public function getDateDisplayFormat() {
         $selected = trim((string) ($this->displayDateFormat ?? 'site_default'));
-        if($selected === '' || $selected === 'site_default') {
-            $siteFormat = (string) ($this->wire('config')->dateFormat ?? 'd M Y');
-            return $siteFormat !== '' ? $siteFormat : 'd M Y';
-        }
-        return $selected;
+        if($selected !== '' && $selected !== 'site_default') return $selected;
+        // $config->dateFormat is a datetime format (PW core default "Y-m-d H:i:s"),
+        // so strip the time component to keep this a date-only format.
+        $siteFormat = (string) ($this->wire('config')->dateFormat ?? '');
+        if($siteFormat === '') $siteFormat = 'd M Y';
+        return $this->stripTimeFromDateFormat($siteFormat);
     }
 
     public function getDateTimeDisplayFormat() {
@@ -3371,6 +3372,14 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $ts = is_numeric($value) ? (int) $value : strtotime((string) $value);
         if(!$ts) return (string) $value;
         return date($this->getDateDisplayFormat(), $ts);
+    }
+
+    protected function stripTimeFromDateFormat($format) {
+        // A configured date format may include a time component (e.g. "Y-m-d H:i:s").
+        // Drop time/timezone tokens plus any now-orphaned separators for a pure date.
+        $dateOnly = preg_replace('/[aABgGhHisuveIOPTZ]/', '', $format);
+        $dateOnly = trim(preg_replace('/\s{2,}/', ' ', $dateOnly), " \t:,.\\/-");
+        return $dateOnly !== '' ? $dateOnly : 'Y-m-d';
     }
 
     public function formatDisplayDateTime($value) {

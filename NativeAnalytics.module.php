@@ -11,6 +11,11 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
     const GOALS_TABLE = 'pwna_goals';
     const GOAL_DAILY_TABLE = 'pwna_goal_daily';
 
+    // Raw session rows pulled into getCurrentVisitors() before PHP-side bot
+    // filtering. Fixed (not derived from the display limit) so the count and
+    // the list always filter the same pool. See getCurrentVisitors().
+    const CURRENT_VISITORS_FETCH_LIMIT = 1000;
+
     protected $defaults = [
         'trackingEnabled' => 1,
         'respectDnt' => 1,
@@ -2947,8 +2952,13 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
     public function getCurrentVisitors($minutes = null, $limit = 25, array $filters = []) {
         $minutes = $minutes ?: (int) $this->realtimeWindowMinutes;
         $where = $this->buildRealtimeWhere($minutes, $filters);
-        // Fetch more rows than needed, so we can filter out bot sessions
-        $fetchLimit = max(100, (int) $limit * 4);
+        // Fetch a fixed-size pool of recent sessions, then filter bots in PHP.
+        // The pool size must NOT depend on $limit: the summary count and the
+        // panel list both call this but with different limits, and if they
+        // fetched different numbers of raw rows they could filter different
+        // sessions and disagree (card shows N, list shows "no active visitors").
+        // A fixed pool guarantees both paths see the same rows.
+        $fetchLimit = self::CURRENT_VISITORS_FETCH_LIMIT;
         $sql = "SELECT page_id, page_title, template, current_path, current_url, referrer_host, device_type, browser, os, visitor_hash,
                        first_seen_at, last_seen_at, hit_count, status_code
                 FROM `" . self::SESSIONS_TABLE . "`

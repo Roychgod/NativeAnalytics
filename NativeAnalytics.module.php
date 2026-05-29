@@ -3121,9 +3121,9 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         }
         $limit = max(1, min(50, (int) $limit));
         $like = '%' . pwna_escape_like_term($term) . '%';
-        $sql = "SELECT page_id, MAX(page_title) AS page_title, MAX(path) AS path, COUNT(*) AS views
+        $sql = "SELECT MAX(page_id) AS page_id, MAX(page_title) AS page_title, MAX(path) AS path, COUNT(*) AS views
                 FROM `" . self::HITS_TABLE . "`
-                WHERE page_id > 0 AND (page_title LIKE :likeTitle OR path LIKE :likePath)
+                WHERE page_id > 0 AND is_bot = 0 AND status_code != 404 AND (page_title LIKE :likeTitle OR path LIKE :likePath)
                 GROUP BY page_id
                 ORDER BY views DESC
                 LIMIT " . (int) $limit;

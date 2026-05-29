@@ -1794,34 +1794,11 @@ protected function renderHelpIcon($text, $label = 'Help', $extraClass = '') {
         $csrfName = $this->session->CSRF->getTokenName();
         $csrfValue = $this->session->CSRF->getTokenValue();
 
-        // The sessions table does not store ip_hash (only visitor_hash). To still
-        // offer the "Block" action we resolve each visitor_hash to its most recent
-        // ip_hash from the hits table in a single bulk query.
         $visitorIpMap = [];
         if($canBlock) {
-            $visitorHashes = [];
-            foreach($rows as $row) {
-                if(!empty($row['visitor_hash'])) $visitorHashes[(string) $row['visitor_hash']] = true;
-            }
-            $visitorHashes = array_keys($visitorHashes);
-            if($visitorHashes) {
-                try {
-                    $db = $this->wire('database');
-                    $placeholders = implode(',', array_fill(0, count($visitorHashes), '?'));
-                    $stmt = $db->prepare("SELECT visitor_hash, ip_hash
-                                          FROM `pwna_hits`
-                                          WHERE visitor_hash IN ({$placeholders})
-                                            AND ip_hash <> ''
-                                          ORDER BY created_at DESC");
-                    $stmt->execute($visitorHashes);
-                    while($r = $stmt->fetch(\PDO::FETCH_ASSOC)) {
-                        $vh = (string) $r['visitor_hash'];
-                        if(!isset($visitorIpMap[$vh])) $visitorIpMap[$vh] = (string) $r['ip_hash'];
-                    }
-                } catch(\Throwable $e) {
-                    // ignore - Block buttons just won't render
-                }
-            }
+            $visitorIpMap = $analytics->resolveVisitorIpHashes(array_map(function($row) {
+                return (string) ($row['visitor_hash'] ?? '');
+            }, $rows));
         }
 
         $mapped = [];
@@ -1983,6 +1960,8 @@ protected function renderChartTooltipScript() {
             'pageId' => (int) $pageId,
             'template' => (string) $template,
             'canBlock' => $this->user->hasPermission('nativeanalytics-manage'),
+            'csrfName' => $this->session->CSRF->getTokenName(),
+            'csrfValue' => $this->session->CSRF->getTokenValue(),
         ];
         $json = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
         if($json === false) $json = '{}';
@@ -2032,8 +2011,17 @@ protected function renderChartTooltipScript() {
     setText('#pwna-health-last-session', (data.health && data.health.last_session_at) || '—');
     setText('#pwna-health-last-event', (data.health && data.health.last_event_at) || '—');
   }
+  function blockForm(ipHash) {
+    if(!cfg.canBlock || !ipHash) return '';
+    var shortHash = esc(String(ipHash).slice(0, 12));
+    return '<form method="post" class="pwna-block-form" style="display:inline">'
+      + '<input type="hidden" name="' + esc(cfg.csrfName) + '" value="' + esc(cfg.csrfValue) + '">'
+      + '<input type="hidden" name="pwna_action" value="block_ip">'
+      + '<input type="hidden" name="ip_hash" value="' + esc(ipHash) + '">'
+      + '<button type="submit" class="pwna-secondary-btn" title="Block this visitor IP (hash: ' + shortHash + '…)" style="padding:2px 8px;font-size:11px;">Block</button>'
+      + '</form>';
+  }
   function renderCurrent(rows) {
-    if(cfg.canBlock) return; // server-rendered with Action column; don't overwrite
     var note = document.getElementById('pwna-current-note');
     if(note) note.textContent = 'Active in the last ' + cfg.minutes + ' minutes.';
     var wrap = document.getElementById('pwna-current-body');
@@ -2042,7 +2030,8 @@ protected function renderChartTooltipScript() {
       wrap.innerHTML = '<p class="pwna-empty">No active visitors right now.</p>';
       return;
     }
-    var html = '<div class="pwna-table-wrap"><table class="pwna-table"><thead><tr><th>Page</th><th>Device</th><th>Browser</th><th>Last seen</th></tr></thead><tbody>';
+    var head = '<th>Page</th><th>Device</th><th>Browser</th><th>Last seen</th>' + (cfg.canBlock ? '<th>Action</th>' : '');
+    var html = '<div class="pwna-table-wrap"><table class="pwna-table"><thead><tr>' + head + '</tr></thead><tbody>';
     rows.forEach(function(row) {
       var page = esc(row.current_path || '/');
       var title = String(row.page_title || '').replace(/<[^>]*>/g, '').trim();
@@ -2050,10 +2039,19 @@ protected function renderChartTooltipScript() {
         page = '<strong>' + esc(title) + '</strong><br><span class="pwna-muted">' + esc(row.current_path || '/') + '</span>';
       }
       if(Number(row.status_code || 200) === 404) page += '<br><span class="pwna-badge">404</span>';
-      html += '<tr><td>' + page + '</td><td>' + esc(row.device_type || '') + '</td><td>' + esc(row.browser || '') + '</td><td>' + esc(row.last_seen_at || '') + '</td></tr>';
+      html += '<tr><td>' + page + '</td><td>' + esc(row.device_type || '') + '</td><td>' + esc(row.browser || '') + '</td><td>' + esc(row.last_seen_at || '') + '</td>';
+      if(cfg.canBlock) html += '<td>' + blockForm(row.ip_hash || '') + '</td>';
+      html += '</tr>';
     });
     html += '</tbody></table></div>';
     wrap.innerHTML = html;
+    // Inline onsubmit handlers are blocked under the script-src nonce CSP, so
+    // attach the confirm prompt to the dynamically built block forms here.
+    wrap.querySelectorAll('.pwna-block-form').forEach(function(form) {
+      form.addEventListener('submit', function(ev) {
+        if(!window.confirm('Block this IP from future tracking? This will silently drop all requests from this visitor.')) ev.preventDefault();
+      });
+    });
   }
   function refresh() {
     var url = new URL(cfg.endpoint, window.location.origin);

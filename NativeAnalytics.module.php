@@ -1932,6 +1932,20 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         if($pageId > 0) $filters['page_id'] = $pageId;
         if($template !== '') $filters['template'] = $template;
 
+        $currentVisitors = $this->getCurrentVisitors($minutes, 25, $filters);
+        // Attach ip_hash per row so the live panel can render the "Block" action
+        // for manage-permission users (mirrors the server-rendered panel).
+        if($this->wire('user')->hasPermission('nativeanalytics-manage')) {
+            $ipMap = $this->resolveVisitorIpHashes(array_map(function($r) {
+                return (string) ($r['visitor_hash'] ?? '');
+            }, $currentVisitors));
+            foreach($currentVisitors as &$cv) {
+                $vh = (string) ($cv['visitor_hash'] ?? '');
+                $cv['ip_hash'] = ($vh !== '' && isset($ipMap[$vh])) ? $ipMap[$vh] : '';
+            }
+            unset($cv);
+        }
+
         $payload = [
             'ok' => true,
             'summary' => $this->getSummary($rangeSpec, $filters),
@@ -1939,7 +1953,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             'summary404' => $this->get404Summary($rangeSpec),
             'sessionQuality' => $this->getSessionQuality($rangeSpec, $filters),
             'health' => $this->getHealthSnapshot(),
-            'currentVisitors' => $this->getCurrentVisitors($minutes, 25, $filters),
+            'currentVisitors' => $currentVisitors,
             'minutes' => $minutes,
             'ts' => date('c'),
         ];
@@ -2947,6 +2961,32 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $rows = $this->getCurrentVisitors($minutes, 1000, $filters);
         $count = count($rows);
         return ['current_visitors' => $count, 'current_uniques' => $count];
+    }
+
+    // The sessions table stores only visitor_hash, not ip_hash. To resolve the
+    // ip_hash needed for the "Block" action we look up each visitor's most
+    // recent ip_hash from the hits table in a single bulk query.
+    public function resolveVisitorIpHashes(array $visitorHashes) {
+        $map = [];
+        $visitorHashes = array_values(array_unique(array_filter($visitorHashes, 'strlen')));
+        if(!$visitorHashes) return $map;
+        try {
+            $db = $this->wire('database');
+            $placeholders = implode(',', array_fill(0, count($visitorHashes), '?'));
+            $stmt = $db->prepare("SELECT visitor_hash, ip_hash
+                                  FROM `" . self::HITS_TABLE . "`
+                                  WHERE visitor_hash IN ({$placeholders})
+                                    AND ip_hash <> ''
+                                  ORDER BY created_at DESC");
+            $stmt->execute($visitorHashes);
+            while($r = $stmt->fetch(\PDO::FETCH_ASSOC)) {
+                $vh = (string) $r['visitor_hash'];
+                if(!isset($map[$vh])) $map[$vh] = (string) $r['ip_hash'];
+            }
+        } catch(\Throwable $e) {
+            // ignore - Block buttons just won't render
+        }
+        return $map;
     }
 
     public function getCurrentVisitors($minutes = null, $limit = 25, array $filters = []) {

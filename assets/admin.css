@@ -1679,3 +1679,50 @@ button.pwna-subtab {
 @media (max-width: 1000px) {
   .pwna-goals-intro-panel { grid-template-columns: 1fr; }
 }
+
+/* Page finder autocomplete */
+.pwna-pagefind {
+    position: relative;
+}
+.pwna-pagefind-results {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    z-index: 50;
+    min-width: 240px;
+    max-height: 320px;
+    overflow-y: auto;
+    margin-top: 4px;
+    background: var(--pwna-bg-panel, #fff);
+    border: 1px solid var(--pwna-border, #d9e0e6);
+    border-radius: 4px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+}
+.pwna-pagefind-item {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    width: 100%;
+    padding: 6px 10px;
+    border: 0;
+    background: transparent;
+    text-align: left;
+    cursor: pointer;
+    color: var(--pwna-text, #2f4248);
+}
+.pwna-pagefind-item:hover,
+.pwna-pagefind-item:focus {
+    background: var(--pwna-bg-tint, #eef3f6);
+}
+.pwna-pagefind-title {
+    font-weight: 600;
+}
+.pwna-pagefind-path {
+    font-size: 0.8em;
+    opacity: 0.7;
+}
+.pwna-pagefind-empty {
+    padding: 8px 10px;
+    font-size: 0.85em;
+    opacity: 0.7;
+}

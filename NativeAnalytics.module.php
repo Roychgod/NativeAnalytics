@@ -4002,17 +4002,40 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         return $html;
     }
 
+    /**
+     * Single source of truth for line-chart layout geometry. Shared by
+     * renderLineChart() (server render) and the live-update script (client
+     * relayout) so the two cannot drift.
+     *
+     * @return array{width:int,height:int,padX:int,padY:int,plotWidth:int,plotHeight:int}
+     */
+    public function getChartGeometry() {
+        $width = 920;
+        $height = 260;
+        $padX = 40;
+        $padY = 20;
+        return [
+            'width' => $width,
+            'height' => $height,
+            'padX' => $padX,
+            'padY' => $padY,
+            'plotWidth' => $width - ($padX * 2),
+            'plotHeight' => $height - ($padY * 2) - 24,
+        ];
+    }
+
     public function renderLineChart(array $series, $metric = 'views', $chartLabel = 'Analytics chart', array $metricLabels = []) {
         $metric = in_array($metric, ['views', 'uniques', 'sessions'], true) ? $metric : 'views';
         $metricLabels = array_merge(['views' => 'Views', 'uniques' => 'Uniques', 'sessions' => 'Sessions'], $metricLabels);
         if(!$series) return '<p>No data yet.</p>';
 
-        $width = 920;
-        $height = 260;
-        $padX = 40;
-        $padY = 20;
-        $plotWidth = $width - ($padX * 2);
-        $plotHeight = $height - ($padY * 2) - 24;
+        $geom = $this->getChartGeometry();
+        $width = $geom['width'];
+        $height = $geom['height'];
+        $padX = $geom['padX'];
+        $padY = $geom['padY'];
+        $plotWidth = $geom['plotWidth'];
+        $plotHeight = $geom['plotHeight'];
         $max = 1;
         foreach($series as $row) $max = max($max, (int) ($row[$metric] ?? 0));
 

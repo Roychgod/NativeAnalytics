@@ -3814,7 +3814,8 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
      */
     public function getChartLatestSlots(array $rangeSpec, array $filters = []) {
         $today = date('Y-m-d');
-        $oneDay = ['start_date' => $today, 'end_date' => $today];
+        $slotDay = (string) ($rangeSpec['end_date'] ?? $today);
+        $oneDay = ['start_date' => $slotDay, 'end_date' => $slotDay];
 
         $pickLast = function(array $series) {
             $row = end($series);
@@ -3834,9 +3835,9 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $out = [];
 
         $dailyRow = $pickLast($this->getDailySeries($oneDay, $filters));
-        if($dailyRow) $out['daily'] = $toSlot($dailyRow, (string) ($dailyRow['day'] ?? $today));
+        if($dailyRow) $out['daily'] = $toSlot($dailyRow, (string) ($dailyRow['day'] ?? $slotDay));
 
-        $hourlyDay = (string) ($rangeSpec['end_date'] ?? $today);
+        $hourlyDay = $slotDay;
         $hourlySeries = $this->getHourlySeries($hourlyDay, $filters);
         $currentHour = ($hourlyDay === $today) ? (int) date('G') : 23;
         if(isset($hourlySeries[$currentHour])) {
@@ -3849,10 +3850,10 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         }
 
         $eventsRow = $pickLast($this->getEventDailySeries($oneDay, $filters));
-        if($eventsRow) $out['events'] = $toSlot($eventsRow, (string) ($eventsRow['day'] ?? $today));
+        if($eventsRow) $out['events'] = $toSlot($eventsRow, (string) ($eventsRow['day'] ?? $slotDay));
 
         $goalsRow = $pickLast($this->getGoalDailySeries($oneDay, $filters));
-        if($goalsRow) $out['goals'] = $toSlot($goalsRow, (string) ($goalsRow['day'] ?? $today));
+        if($goalsRow) $out['goals'] = $toSlot($goalsRow, (string) ($goalsRow['day'] ?? $slotDay));
 
         return $out;
     }

@@ -258,8 +258,8 @@ public function ___execute() {
     $overviewContent = $this->renderToolbar($rangeMeta, $pageId, $template, $templates, 'overview');
     $overviewContent .= $this->renderCards($summary, $current, $summary404, $quality);
     $overviewContent .= '<div class="pwna-grid-2">';
-    $overviewContent .= '<div class="pwna-panel"><h2>Traffic trend</h2><p class="pwna-note">Daily totals for the selected period.</p>' . $analytics->renderLineChart($series, 'views', 'Traffic trend by day') . '</div>';
-    $overviewContent .= '<div class="pwna-panel"><h2>Traffic by hour</h2><p class="pwna-note">Hover a point to see the hour, views, uniques and sessions for the last day in the selected range.</p>' . $analytics->renderLineChart($hourlySeries, 'views', 'Traffic by hour for selected day') . '</div>';
+    $overviewContent .= '<div class="pwna-panel"><h2>Traffic trend</h2><p class="pwna-note">Daily totals for the selected period.</p>' . $analytics->renderLineChart($series, 'views', 'Traffic trend by day', [], 'daily') . '</div>';
+    $overviewContent .= '<div class="pwna-panel"><h2>Traffic by hour</h2><p class="pwna-note">Hover a point to see the hour, views, uniques and sessions for the last day in the selected range.</p>' . $analytics->renderLineChart($hourlySeries, 'views', 'Traffic by hour for selected day', [], 'hourly') . '</div>';
     $overviewContent .= '</div>';
     $overviewContent .= '<div class="pwna-grid-2">';
     $overviewContent .= $this->renderSimpleTable('Top pages', ['Page', 'Views', 'Uniques', 'Sessions'], $this->mapTopPages($pages), true);
@@ -274,7 +274,7 @@ public function ___execute() {
     $compareContent .= $this->renderComparePanel($analytics, $rangeMeta, $compareMeta, $summary, $compareSummary, $quality, $compareQuality, $summary404, $compareSummary404, $series, $compareSeries, $pageId, $template, $templates);
 
     $engagementMetricsContent = $this->renderEventCards($eventSummary, $eventFormSummary, $eventDownloadSummary, $eventContactSummary, $eventNavigationSummary);
-    $engagementMetricsContent .= '<div class="pwna-panel"><h2>Engagement trend</h2><p class="pwna-note">Tracked actions over time for the selected period.</p>' . $analytics->renderLineChart($eventSeries, 'views', 'Tracked actions by day') . '</div>';
+    $engagementMetricsContent .= '<div class="pwna-panel"><h2>Engagement trend</h2><p class="pwna-note">Tracked actions over time for the selected period.</p>' . $analytics->renderLineChart($eventSeries, 'views', 'Tracked actions by day', [], 'events') . '</div>';
     $engagementMetricsContent .= '<div class="pwna-grid-2">';
     $engagementMetricsContent .= $this->renderSimpleTable('Top tracked actions', ['Action', 'Events', 'Unique visitors', 'Sessions'], $this->mapEventRows($topEvents), true);
     $engagementMetricsContent .= $this->renderSimpleTable('Top action targets', ['Target', 'Group', 'Events', 'Sessions'], $this->mapEventTargetRows($topEventTargets), true);
@@ -1423,7 +1423,7 @@ protected function renderGoalTrendPanel(NativeAnalytics $analytics, array $goalS
     }
 
     $out .= '<p class="pwna-note">Daily goal completions for active goals in the selected period.</p>';
-    $out .= $analytics->renderLineChart($goalSeries, 'views', 'Goal conversions by day', ['views' => 'Conversions', 'uniques' => 'Unique visitors', 'sessions' => 'Sessions']);
+    $out .= $analytics->renderLineChart($goalSeries, 'views', 'Goal conversions by day', ['views' => 'Conversions', 'uniques' => 'Unique visitors', 'sessions' => 'Sessions'], 'goals');
     $out .= '</div>';
     return $out;
 }

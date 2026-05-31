@@ -4024,7 +4024,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         ];
     }
 
-    public function renderLineChart(array $series, $metric = 'views', $chartLabel = 'Analytics chart', array $metricLabels = []) {
+    public function renderLineChart(array $series, $metric = 'views', $chartLabel = 'Analytics chart', array $metricLabels = [], $liveId = '') {
         $metric = in_array($metric, ['views', 'uniques', 'sessions'], true) ? $metric : 'views';
         $metricLabels = array_merge(['views' => 'Views', 'uniques' => 'Uniques', 'sessions' => 'Sessions'], $metricLabels);
         if(!$series) return '<p>No data yet.</p>';
@@ -4053,7 +4053,8 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
 
             $label = (string) ($row['label'] ?? (isset($row['day']) ? $this->formatDisplayDate($row['day']) : ''));
             $timeLabel = (string) ($row['time_label'] ?? (isset($row['hour']) ? sprintf('%02d:00–%02d:59', (int) $row['hour'], (int) $row['hour']) : ''));
-            $circles[] = '<circle class="pwna-point" cx="' . $x . '" cy="' . $y . '" r="4" data-label="' . $sanitizer->entities($label) . '" data-time="' . $sanitizer->entities($timeLabel) . '" data-views="' . (int) ($row['views'] ?? 0) . '" data-uniques="' . (int) ($row['uniques'] ?? 0) . '" data-sessions="' . (int) ($row['sessions'] ?? 0) . '"></circle>';
+            $slotKey = isset($row['hour']) ? (string) (int) $row['hour'] : (string) ($row['day'] ?? $index);
+            $circles[] = '<circle class="pwna-point" data-key="' . $sanitizer->entities($slotKey) . '" cx="' . $x . '" cy="' . $y . '" r="4" data-label="' . $sanitizer->entities($label) . '" data-time="' . $sanitizer->entities($timeLabel) . '" data-views="' . (int) ($row['views'] ?? 0) . '" data-uniques="' . (int) ($row['uniques'] ?? 0) . '" data-sessions="' . (int) ($row['sessions'] ?? 0) . '"></circle>';
         }
 
         $first = reset($series);
@@ -4061,15 +4062,23 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $firstLabel = isset($first['hour']) ? '00:00' : $this->formatDisplayDate($first['day']);
         $lastLabel = isset($last['hour']) ? '23:00' : $this->formatDisplayDate($last['day']);
 
-        $html  = '<div class="pwna-chart-wrap">';
+        $liveAttr = '';
+        if($liveId !== '') {
+            $lastRow = end($series);
+            $dayStamp = is_array($lastRow) && isset($lastRow['day']) ? (string) $lastRow['day'] : '';
+            $liveAttr = ' data-pwna-chart-live="' . $sanitizer->entities($liveId) . '" data-pwna-day="' . $sanitizer->entities($dayStamp) . '"';
+        }
+        $html  = '<div class="pwna-chart-wrap"' . $liveAttr . '>';
         $html .= '<svg class="pwna-chart" viewBox="0 0 ' . $width . ' ' . $height . '" role="img" aria-label="' . $sanitizer->entities($chartLabel) . '">';
         $html .= '<line x1="' . $padX . '" y1="' . ($padY + $plotHeight) . '" x2="' . ($padX + $plotWidth) . '" y2="' . ($padY + $plotHeight) . '" class="pwna-axis" />';
         $html .= '<line x1="' . $padX . '" y1="' . $padY . '" x2="' . $padX . '" y2="' . ($padY + $plotHeight) . '" class="pwna-axis" />';
         for($i = 0; $i <= 4; $i++) {
             $v = (int) round(($max / 4) * $i);
             $y = $padY + $plotHeight - (($v / $max) * $plotHeight);
-            $html .= '<line x1="' . $padX . '" y1="' . round($y, 2) . '" x2="' . ($padX + $plotWidth) . '" y2="' . round($y, 2) . '" class="pwna-grid" />';
-            $html .= '<text x="8" y="' . (round($y, 2) + 4) . '" class="pwna-label">' . $v . '</text>';
+            $gridAttr = $liveId !== '' ? ' data-pwna-grid="' . $i . '"' : '';
+            $labelAttr = $liveId !== '' ? ' data-pwna-grid-label="' . $i . '"' : '';
+            $html .= '<line x1="' . $padX . '" y1="' . round($y, 2) . '" x2="' . ($padX + $plotWidth) . '" y2="' . round($y, 2) . '" class="pwna-grid"' . $gridAttr . ' />';
+            $html .= '<text x="8" y="' . (round($y, 2) + 4) . '" class="pwna-label"' . $labelAttr . '>' . $v . '</text>';
         }
         $html .= '<polyline fill="none" class="pwna-line" points="' . implode(' ', $points) . '" />';
         $html .= implode('', $circles);

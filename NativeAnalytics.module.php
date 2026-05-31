@@ -1935,6 +1935,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             'sessionQuality' => $this->getSessionQuality($rangeSpec, $filters),
             'health' => $this->getHealthSnapshot(),
             'currentVisitors' => $this->getCurrentVisitors($minutes, 25, $filters),
+            'chartLatest' => $this->getChartLatestSlots($rangeSpec, $filters),
             'minutes' => $minutes,
             'ts' => date('c'),
         ];
@@ -3799,6 +3800,61 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             $cursor = strtotime('+1 day', $cursor);
         }
         return $series;
+    }
+
+    /**
+     * Returns the single moving slot per live trend chart (today's totals, and
+     * the current hour for the hourly chart), keyed for client-side matching.
+     * Reuses the existing series builders with a one-day range so each poll
+     * scans only the current day.
+     *
+     * @param array $rangeSpec Range computed for this request (its end_date is the hourly chart's day).
+     * @param array $filters   page_id / template filters already resolved by the caller.
+     * @return array
+     */
+    public function getChartLatestSlots(array $rangeSpec, array $filters = []) {
+        $today = date('Y-m-d');
+        $oneDay = ['start_date' => $today, 'end_date' => $today];
+
+        $pickLast = function(array $series) {
+            $row = end($series);
+            return is_array($row) ? $row : null;
+        };
+        $toSlot = function($row, $key) {
+            if(!is_array($row)) return null;
+            return [
+                'key' => $key,
+                'label' => (string) ($row['label'] ?? ''),
+                'views' => (int) ($row['views'] ?? 0),
+                'uniques' => (int) ($row['uniques'] ?? 0),
+                'sessions' => (int) ($row['sessions'] ?? 0),
+            ];
+        };
+
+        $out = [];
+
+        $dailyRow = $pickLast($this->getDailySeries($oneDay, $filters));
+        if($dailyRow) $out['daily'] = $toSlot($dailyRow, (string) ($dailyRow['day'] ?? $today));
+
+        $hourlyDay = (string) ($rangeSpec['end_date'] ?? $today);
+        $hourlySeries = $this->getHourlySeries($hourlyDay, $filters);
+        $currentHour = ($hourlyDay === $today) ? (int) date('G') : 23;
+        if(isset($hourlySeries[$currentHour])) {
+            $hourlyRow = $hourlySeries[$currentHour];
+            $slot = $toSlot($hourlyRow, (string) $currentHour);
+            if($slot) {
+                $slot['day'] = $hourlyDay;
+                $out['hourly'] = $slot;
+            }
+        }
+
+        $eventsRow = $pickLast($this->getEventDailySeries($oneDay, $filters));
+        if($eventsRow) $out['events'] = $toSlot($eventsRow, (string) ($eventsRow['day'] ?? $today));
+
+        $goalsRow = $pickLast($this->getGoalDailySeries($oneDay, $filters));
+        if($goalsRow) $out['goals'] = $toSlot($goalsRow, (string) ($goalsRow['day'] ?? $today));
+
+        return $out;
     }
 
     public function getHealthSnapshot() {

@@ -1983,6 +1983,7 @@ protected function renderChartTooltipScript() {
             'pageId' => (int) $pageId,
             'template' => (string) $template,
             'canBlock' => $this->user->hasPermission('nativeanalytics-manage'),
+            'chartGeom' => $analytics->getChartGeometry(),
         ];
         $json = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
         if($json === false) $json = '{}';
@@ -2055,7 +2056,79 @@ protected function renderChartTooltipScript() {
     html += '</tbody></table></div>';
     wrap.innerHTML = html;
   }
-  function refresh() {
+  function chartNum(v) { var n = Number(v); return isFinite(n) ? n : 0; }
+  function round2(n) { return Math.round(n * 100) / 100; }
+  function readSlots(wrap) {
+    var out = [];
+    wrap.querySelectorAll('circle.pwna-point').forEach(function(c) {
+      out.push({
+        key: c.getAttribute('data-key'),
+        label: c.getAttribute('data-label') || '',
+        views: chartNum(c.getAttribute('data-views')),
+        uniques: chartNum(c.getAttribute('data-uniques')),
+        sessions: chartNum(c.getAttribute('data-sessions'))
+      });
+    });
+    return out;
+  }
+  function layoutChart(wrap, slots) {
+    var g = cfg.chartGeom;
+    if(!g) return;
+    var svg = wrap.querySelector('svg.pwna-chart');
+    if(!svg) return;
+    var max = 1;
+    slots.forEach(function(s) { if(s.views > max) max = s.views; });
+    var count = slots.length;
+    var circles = svg.querySelectorAll('circle.pwna-point');
+    var pts = [];
+    slots.forEach(function(s, i) {
+      var x = g.padX + (count > 1 ? (g.plotWidth / (count - 1)) * i : g.plotWidth / 2);
+      var y = g.padY + g.plotHeight - (s.views / max) * g.plotHeight;
+      x = round2(x); y = round2(y);
+      pts.push(x + ',' + y);
+      var c = circles[i];
+      if(c) {
+        c.setAttribute('cx', x);
+        c.setAttribute('cy', y);
+        c.setAttribute('data-key', s.key);
+        c.setAttribute('data-label', s.label);
+        c.setAttribute('data-views', s.views);
+        c.setAttribute('data-uniques', s.uniques);
+        c.setAttribute('data-sessions', s.sessions);
+      }
+    });
+    var line = svg.querySelector('.pwna-line');
+    if(line) line.setAttribute('points', pts.join(' '));
+    var grids = svg.querySelectorAll('[data-pwna-grid]');
+    var glabels = svg.querySelectorAll('[data-pwna-grid-label]');
+    for(var i = 0; i <= 4; i++) {
+      var v = Math.round((max / 4) * i);
+      var gy = round2(g.padY + g.plotHeight - (v / max) * g.plotHeight);
+      if(grids[i]) { grids[i].setAttribute('y1', gy); grids[i].setAttribute('y2', gy); }
+      if(glabels[i]) { glabels[i].setAttribute('y', gy + 4); glabels[i].textContent = v; }
+    }
+  }
+  function updateCharts(chartLatest) {
+    if(!chartLatest) return;
+    document.querySelectorAll('[data-pwna-chart-live]').forEach(function(wrap) {
+      var id = wrap.getAttribute('data-pwna-chart-live');
+      var latest = chartLatest[id];
+      if(!latest) return;
+      var slots = readSlots(wrap);
+      var matchKey = String(latest.key);
+      for(var i = 0; i < slots.length; i++) {
+        if(String(slots[i].key) === matchKey) {
+          slots[i].views = chartNum(latest.views);
+          slots[i].uniques = chartNum(latest.uniques);
+          slots[i].sessions = chartNum(latest.sessions);
+          if(latest.label) slots[i].label = latest.label;
+          layoutChart(wrap, slots);
+          break;
+        }
+      }
+    });
+  }
+  function buildUrl() {
     var url = new URL(cfg.endpoint, window.location.origin);
     url.searchParams.set('range_days', String(cfg.rangeDays));
     url.searchParams.set('minutes', String(cfg.minutes));
@@ -2063,12 +2136,16 @@ protected function renderChartTooltipScript() {
     if(cfg.toDate) url.searchParams.set('to_date', cfg.toDate);
     if(cfg.pageId > 0) url.searchParams.set('page_id', String(cfg.pageId));
     if(cfg.template) url.searchParams.set('template', cfg.template);
-    fetch(url.toString(), { credentials: 'same-origin' })
+    return url;
+  }
+  function refresh() {
+    fetch(buildUrl().toString(), { credentials: 'same-origin' })
       .then(function(r) { return r.ok ? r.json() : null; })
       .then(function(data) {
         if(!data || data.ok === false) return;
         updateCards(data);
         renderCurrent(data.currentVisitors || []);
+        updateCharts(data.chartLatest);
       })
       .catch(function(){});
   }

@@ -1967,7 +1967,7 @@ if(document.readyState === "loading") { document.addEventListener("DOMContentLoa
 }
 
 protected function renderChartTooltipScript() {
-    return '<script' . $this->getScriptNonceAttribute() . '>(function(){function init(){document.querySelectorAll(".pwna-chart-wrap").forEach(function(wrap){var tip=wrap.querySelector(".pwna-chart-tooltip");if(!tip||wrap.dataset.pwnaTipInit==="1")return;wrap.dataset.pwnaTipInit="1";var dayEl=tip.querySelector(".pwna-chart-tooltip-day");var timeEl=tip.querySelector(".pwna-chart-tooltip-time");var viewsEl=tip.querySelector("[data-pwna-tip=views]");var uniquesEl=tip.querySelector("[data-pwna-tip=uniques]");var sessionsEl=tip.querySelector("[data-pwna-tip=sessions]");var compareWrap=tip.querySelector(".pwna-chart-tooltip-compare");var compareDay=tip.querySelector("[data-pwna-tip=compare-day]");var compareViews=tip.querySelector("[data-pwna-tip=compare-views]");var compareUniques=tip.querySelector("[data-pwna-tip=compare-uniques]");var compareSessions=tip.querySelector("[data-pwna-tip=compare-sessions]");function place(ev){var rect=wrap.getBoundingClientRect();var x=(ev.clientX-rect.left)+14;var y=(ev.clientY-rect.top)-12;var maxX=Math.max(8, rect.width-tip.offsetWidth-8);var maxY=Math.max(8, rect.height-tip.offsetHeight-8);tip.style.left=Math.max(8, Math.min(x, maxX))+"px";tip.style.top=Math.max(8, Math.min(y, maxY))+"px";}function activate(point,ev){wrap.querySelectorAll(".pwna-point.is-active").forEach(function(el){el.classList.remove("is-active");});point.classList.add("is-active");dayEl.textContent=point.getAttribute("data-label")||"";var timeText=point.getAttribute("data-time")||"";timeEl.textContent=timeText;timeEl.hidden=!timeText;viewsEl.textContent=point.getAttribute("data-views")||"0";uniquesEl.textContent=point.getAttribute("data-uniques")||"0";sessionsEl.textContent=point.getAttribute("data-sessions")||"0";var hasCompare=point.hasAttribute("data-compare-label");if(compareWrap){compareWrap.hidden=!hasCompare;if(hasCompare){compareDay.textContent=point.getAttribute("data-compare-label")||"";compareViews.textContent=point.getAttribute("data-compare-views")||"0";compareUniques.textContent=point.getAttribute("data-compare-uniques")||"0";compareSessions.textContent=point.getAttribute("data-compare-sessions")||"0";}}tip.hidden=false;place(ev);}wrap.querySelectorAll(".pwna-point").forEach(function(point){point.addEventListener("mouseenter", function(ev){activate(point,ev);});point.addEventListener("mousemove", function(ev){place(ev);});});wrap.addEventListener("mouseleave", function(){wrap.querySelectorAll(".pwna-point.is-active").forEach(function(el){el.classList.remove("is-active");});tip.hidden=true;});});}if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded", init);}else{init();}})();</script>';
+    return '<script' . $this->getScriptNonceAttribute() . '>(function(){function init(){document.querySelectorAll(".pwna-chart-wrap").forEach(function(wrap){var tip=wrap.querySelector(".pwna-chart-tooltip");if(!tip||wrap.dataset.pwnaTipInit==="1")return;wrap.dataset.pwnaTipInit="1";var dayEl=tip.querySelector(".pwna-chart-tooltip-day");var timeEl=tip.querySelector(".pwna-chart-tooltip-time");var viewsEl=tip.querySelector("[data-pwna-tip=views]");var uniquesEl=tip.querySelector("[data-pwna-tip=uniques]");var sessionsEl=tip.querySelector("[data-pwna-tip=sessions]");var compareWrap=tip.querySelector(".pwna-chart-tooltip-compare");var compareDay=tip.querySelector("[data-pwna-tip=compare-day]");var compareViews=tip.querySelector("[data-pwna-tip=compare-views]");var compareUniques=tip.querySelector("[data-pwna-tip=compare-uniques]");var compareSessions=tip.querySelector("[data-pwna-tip=compare-sessions]");function place(ev){var rect=wrap.getBoundingClientRect();var x=(ev.clientX-rect.left)+14;var y=(ev.clientY-rect.top)-12;var maxX=Math.max(8, rect.width-tip.offsetWidth-8);var maxY=Math.max(8, rect.height-tip.offsetHeight-8);tip.style.left=Math.max(8, Math.min(x, maxX))+"px";tip.style.top=Math.max(8, Math.min(y, maxY))+"px";}function activate(point,ev){wrap.querySelectorAll(".pwna-point.is-active").forEach(function(el){el.classList.remove("is-active");});point.classList.add("is-active");dayEl.textContent=point.getAttribute("data-label")||"";var timeText=point.getAttribute("data-time")||"";timeEl.textContent=timeText;timeEl.hidden=!timeText;viewsEl.textContent=point.getAttribute("data-views")||"0";uniquesEl.textContent=point.getAttribute("data-uniques")||"0";sessionsEl.textContent=point.getAttribute("data-sessions")||"0";var hasCompare=point.hasAttribute("data-compare-label");if(compareWrap){compareWrap.hidden=!hasCompare;if(hasCompare){compareDay.textContent=point.getAttribute("data-compare-label")||"";compareViews.textContent=point.getAttribute("data-compare-views")||"0";compareUniques.textContent=point.getAttribute("data-compare-uniques")||"0";compareSessions.textContent=point.getAttribute("data-compare-sessions")||"0";}}tip.hidden=false;place(ev);}wrap.querySelectorAll(".pwna-point").forEach(function(point){point.addEventListener("mouseenter", function(ev){activate(point,ev);});point.addEventListener("mousemove", function(ev){place(ev);});});wrap.addEventListener("mouseleave", function(){wrap.querySelectorAll(".pwna-point.is-active").forEach(function(el){el.classList.remove("is-active");});tip.hidden=true;});});}window.__pwnaInitChartTooltips=init;if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded", init);}else{init();}})();</script>';
 }
 
         protected function renderAutoRefreshScript(array $rangeMeta, $minutes, $pageId, $template) {
@@ -2110,10 +2110,17 @@ protected function renderChartTooltipScript() {
   }
   function updateCharts(chartLatest) {
     if(!chartLatest) return;
+    var rollover = [];
     document.querySelectorAll('[data-pwna-chart-live]').forEach(function(wrap) {
       var id = wrap.getAttribute('data-pwna-chart-live');
       var latest = chartLatest[id];
       if(!latest) return;
+      var incomingDay = (id === 'hourly') ? latest.day : String(latest.key);
+      var renderedDay = wrap.getAttribute('data-pwna-day');
+      if(renderedDay !== null && incomingDay != null && String(incomingDay) !== String(renderedDay)) {
+        rollover.push(id);
+        return;
+      }
       var slots = readSlots(wrap);
       var matchKey = String(latest.key);
       for(var i = 0; i < slots.length; i++) {
@@ -2127,6 +2134,7 @@ protected function renderChartTooltipScript() {
         }
       }
     });
+    refetchCharts(rollover);
   }
   function buildUrl() {
     var url = new URL(cfg.endpoint, window.location.origin);
@@ -2137,6 +2145,28 @@ protected function renderChartTooltipScript() {
     if(cfg.pageId > 0) url.searchParams.set('page_id', String(cfg.pageId));
     if(cfg.template) url.searchParams.set('template', cfg.template);
     return url;
+  }
+  function refetchCharts(ids) {
+    if(!ids.length) return;
+    var url = buildUrl();
+    url.searchParams.set('render_charts', ids.join(','));
+    fetch(url.toString(), { credentials: 'same-origin' })
+      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function(data) {
+        if(!data || !data.chartHtml) return;
+        ids.forEach(function(id) {
+          var html = data.chartHtml[id];
+          var oldWrap = document.querySelector('[data-pwna-chart-live="' + id + '"]');
+          if(!html || !oldWrap) return;
+          var tmp = document.createElement('div');
+          tmp.innerHTML = html;
+          var newWrap = tmp.querySelector('[data-pwna-chart-live]');
+          if(!newWrap) return;
+          oldWrap.parentNode.replaceChild(newWrap, oldWrap);
+          if(window.__pwnaInitChartTooltips) window.__pwnaInitChartTooltips();
+        });
+      })
+      .catch(function(){});
   }
   function refresh() {
     fetch(buildUrl().toString(), { credentials: 'same-origin' })

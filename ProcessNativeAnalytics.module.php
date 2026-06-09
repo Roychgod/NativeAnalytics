@@ -321,27 +321,33 @@ public function ___execute() {
         $techContent .= $this->renderHealthPanel($health);
     }
 
+    // Build panels keyed by slug (in registry order), then let hooks append
+    // their own. WireTabs wants label => content, so map slugs to labels at
+    // render time; the fallback nav addresses panels by slug directly.
+    $labels = $this->getTabLabels();
+    $tabContent = $this->getTabs([
+        'overview' => $overviewContent,
+        'engagement' => $engagementContent,
+        'goals' => $goalsContent,
+        'compare' => $compareContent,
+        'sources' => $sourcesContent,
+        'tech' => $techContent,
+    ]);
+
     if($wireTabs) {
+        $rendered = [];
+        foreach($tabContent as $slug => $content) {
+            $label = isset($labels[$slug]) ? $labels[$slug] : $this->sanitizer->entities(ucfirst($slug));
+            $rendered[$label] = $content;
+        }
         $out .= '<div id="pwna-wiretabs" class="pwna-wiretabs">';
-        $out .= $wireTabs->render([
-            'Overview' => $overviewContent,
-            'Engagement' => $engagementContent,
-            'Goals' => $goalsContent,
-            'Compare' => $compareContent,
-            'Sources' => $sourcesContent,
-            'System' => $techContent,
-        ]);
+        $out .= $wireTabs->render($rendered);
         $out .= '</div>';
     } else {
         $out .= $this->renderTabNav($activeTab, $rangeMeta, $pageId, $template, $compareMeta['selected']);
+        $activeContent = isset($tabContent[$activeTab]) ? $tabContent[$activeTab] : reset($tabContent);
         $out .= '<div class="pwna-tab-panels">';
-        $out .= '<section class="pwna-tab-panel">' . (
-            $activeTab === 'engagement' ? $engagementContent : (
-            $activeTab === 'goals' ? $goalsContent : (
-            $activeTab === 'compare' ? $compareContent : (
-            $activeTab === 'sources' ? $sourcesContent : (
-            $activeTab === 'tech' ? $techContent : $overviewContent
-        ))))) . '</section>';
+        $out .= '<section class="pwna-tab-panel">' . $activeContent . '</section>';
         $out .= '</div>';
     }
 
@@ -1022,14 +1028,7 @@ protected function renderWireTab($id, $title, $content, $isActive = false, $extr
 }
 
 protected function renderWireTabsScript($activeTab, $engagementView) {
-    $labels = [
-        'overview' => 'Overview',
-        'engagement' => 'Engagement',
-        'goals' => 'Goals',
-        'compare' => 'Compare',
-        'sources' => 'Sources',
-        'tech' => 'System',
-    ];
+    $labels = $this->getTabLabels();
     $payload = [
         'initialSlug' => in_array($activeTab, array_keys($labels), true) ? $activeTab : 'overview',
         'hasExplicitMainTab' => $this->input->get('tab') ? true : false,
@@ -1215,9 +1214,42 @@ protected function renderEngagementPanels($metricsContent, $helperContent, $acti
     return $out;
 }
 
+/**
+ * Canonical tab registry: slug => label, in display order.
+ *
+ * Hookable so companion modules (e.g. NativeAnalyticsBehavior) can register
+ * extra tabs. A hook that adds a slug here MUST also add matching content
+ * under the same slug via the getTabs() hook, or the tab will appear in the
+ * nav with no panel behind it.
+ *
+ * @return array<string,string>
+ */
+public function ___getTabLabels() {
+    return [
+        'overview' => 'Overview',
+        'engagement' => 'Engagement',
+        'goals' => 'Goals',
+        'compare' => 'Compare',
+        'sources' => 'Sources',
+        'tech' => 'System',
+    ];
+}
+
+/**
+ * Tab content keyed by slug, in display order. Receives the core panels and
+ * returns them; hookable so companion modules can append their own panels.
+ * Slugs here must line up with getTabLabels() so every panel has a nav entry.
+ *
+ * @param array<string,string> $tabs slug => HTML content
+ * @return array<string,string>
+ */
+public function ___getTabs(array $tabs) {
+    return $tabs;
+}
+
 protected function getActiveTab() {
     $tab = $this->sanitizer->name((string) $this->input->get('tab'));
-    if(!in_array($tab, ['overview', 'engagement', 'goals', 'compare', 'sources', 'tech'], true)) $tab = 'overview';
+    if(!in_array($tab, array_keys($this->getTabLabels()), true)) $tab = 'overview';
     return $tab;
 }
 
@@ -1252,14 +1284,7 @@ protected function renderTabNav($activeTab, array $rangeMeta, $pageId, $template
     ];
     if($pageId > 0) $base['page_id'] = (int) $pageId;
     if($template !== '') $base['template'] = (string) $template;
-    $tabs = [
-        'overview' => 'Overview',
-        'engagement' => 'Engagement',
-        'goals' => 'Goals',
-        'compare' => 'Compare',
-        'sources' => 'Sources',
-        'tech' => 'System',
-    ];
+    $tabs = $this->getTabLabels();
     $out = '<nav class="pwna-tabs">';
     foreach($tabs as $key => $label) {
         $params = $base;

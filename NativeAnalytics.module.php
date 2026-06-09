@@ -2684,10 +2684,14 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
 
     public function handleHourlyCron() {
         if(!empty($this->botFilterEnabled)) $this->markBehavioralBots(24);
-        $day = date('Y-m-d');
-        $this->rebuildDailyAggregate($day);
-        $this->rebuildEventDailyAggregate($day);
-        $this->rebuildGoalDailyAggregate($day);
+        // markBehavioralBots scans a 24h lookback, so it can flag rows dated
+        // yesterday. Rebuild both days it can touch — otherwise yesterday's
+        // pre-aggregated tables (read by high-traffic mode) keep stale bot counts.
+        foreach([date('Y-m-d', strtotime('-1 day')), date('Y-m-d')] as $day) {
+            $this->rebuildDailyAggregate($day);
+            $this->rebuildEventDailyAggregate($day);
+            $this->rebuildGoalDailyAggregate($day);
+        }
         $this->purgeOldRealtimeSessions();
     }
 

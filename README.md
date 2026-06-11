@@ -1,10 +1,10 @@
-NativeAnalytics 1.0.26
+NativeAnalytics 1.0.27
 
 # NativeAnalytics
 
 Native first-party analytics module for ProcessWire CMS. It tracks traffic and engagement directly inside ProcessWire, without Google Analytics or external APIs.
 
-## Features in v1.0.26
+## Features in v1.0.27
 
 NativeAnalytics is a first-party analytics dashboard for ProcessWire. It keeps the tracking data inside your ProcessWire installation and does not rely on Google Analytics, external tracking scripts or remote analytics APIs.
 
@@ -243,3 +243,8 @@ Thanks to **[adrianbj](https://github.com/adrianbj)** for all five improvements 
 - **Current visitors panel now shows one row per person, not per session (PR #7).** Mobile browsers aggressively discard and restore background tabs, wiping `sessionStorage` and minting a fresh session ID on the next pageview — even though `localStorage` (and therefore `visitor_hash`) is unchanged. The panel was listing one row per session, so a single mobile visitor could appear as two or three rows while the summary card above correctly counted them as one unique. `getCurrentVisitors()` now collapses rows by `visitor_hash`, keeping the most-recent session and summing `hit_count` across all sessions in the realtime window. Matches the behaviour of Plausible, Fathom, and GA Realtime. (adrianbj, PR #7)
 - **Fixed `?tab=` URL parameter not updating when switching tabs (PR #6).** The original click handler polled the DOM for the active tab inside a `setTimeout(0)`, but jQuery UI may not have swapped the `.ui-tabs-active` class yet at that point, so `getActiveSlug()` returned the *previous* tab. Four compounding causes were fixed across four commits: (1) switched primary URL-sync to jQuery UI's `tabsactivate` event, which fires after activation and exposes `ui.newTab` directly; (2) gated `tabsactivate` with an `initialTabActivated` flag to suppress URL writes during widget creation; (3) filtered the click handler to real DOM events using `event.originalEvent` to ignore programmatic `.trigger()` calls from WireTabs init; (4) removed the `pagehide`/`beforeunload` listener that was calling `syncMainTabState()` during page teardown — jQuery UI strips `.ui-tabs-active` during widget destruction, causing the URL to briefly flash to `?tab=overview` on every reload. Reload and share URL now work correctly for all tabs. (adrianbj, PR #6)
 - **Added `scanner_404` bot rule and `bot404ShowBots` setting (PR #5).** The existing `ua_fleet` and `ip_excessive` rules miss a common attack pattern: recon scanners that probe one missing path per IP in a short burst — well below both thresholds. A new Rule 3 (`scanner_404`) flags any session whose *only* hit is a 404. Real users almost always take a second action after a 404 (back button, retry, follow a suggestion link), producing a multi-hit session; a session with exactly one 404 hit is an overwhelmingly reliable scanner signal. A new `bot404ShowBots` module setting (default **off**) controls whether the 404 panel includes bot-flagged sessions. Off by default for consistency with all other panels; admins who want scanner-probe visibility for attack-path analysis can opt in. (adrianbj, PR #5)
+
+## 1.0.27 notes
+
+- **Fixed the tracking endpoint being recorded as a pageview.** On some setups (ProcessWire installed in a subdirectory, behind a reverse proxy, or where the `/pwna-track/` request was not recognised as the analytics endpoint) the endpoint's own path could leak into stored hits. The result was that **Top pages**, **Top landing pages** and **Top exit pages** all showed only `/pwna-track/`, with sessions started equal to sessions ended. A new `isEndpointPath()` guard now hard-excludes `/pwna-track/` and `/pwna-realtime/` from being stored as a pageview or event, and the `getRequestPathForStorage()` fallback can no longer return an endpoint path. Existing `/pwna-track/` rows can be cleaned up via the suspicious-path removal tool.
+- Updated module version metadata to `1.0.27` / integer `1027`.

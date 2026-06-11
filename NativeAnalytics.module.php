@@ -2,7 +2,7 @@
 
 class NativeAnalytics extends WireData implements Module, ConfigurableModule {
 
-    const VERSION = '1.0.26';
+    const VERSION = '1.0.27';
     const HITS_TABLE = 'pwna_hits';
     const DAILY_TABLE = 'pwna_daily';
     const SESSIONS_TABLE = 'pwna_sessions';
@@ -58,7 +58,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         return [
             'title' => 'NativeAnalytics',
             'summary' => 'Native first-party analytics dashboard for ProcessWire with traffic, compare, exports, event tracking and goals.',
-            'version' => 1026,
+            'version' => 1027,
             'author' => 'Pyxios - Roych (www.pyxios.com)',
             'href' => 'https://processwire.com/talk/topic/31808-native-analytics-%E2%80%94-a-native-analytics-module-for-processwire/',
             'repo' => 'https://github.com/Roychgod/NativeAnalytics',
@@ -2331,6 +2331,18 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         return $normalized === '/pwna-track';
     }
 
+    /**
+     * True if a stored/derived path points at the analytics endpoints themselves.
+     * Guards against the endpoint ever being recorded as a pageview (e.g. when
+     * the request is not recognised as the endpoint on subdir/proxy setups).
+     */
+    protected function isEndpointPath($path) {
+        $p = $this->normalizePath((string) $path);
+        if(strpos($p, '?') !== false) $p = strtok($p, '?');
+        $p = rtrim($p, '/');
+        return $p === '/pwna-track' || $p === '/pwna-realtime';
+    }
+
     protected function getPayloadPathForStorage(array $payload) {
         foreach(['path', 'pathname'] as $key) {
             if(isset($payload[$key]) && is_scalar($payload[$key])) {
@@ -2427,6 +2439,9 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             if($this->ipIsRecent404Scanner()) $this->sendTrackingResponse(204);
             if($this->isLikelyBotFromUserAgent($ua)) $this->sendTrackingResponse(204);
         }
+
+        // Never record the tracking endpoint itself as a pageview.
+        if($this->isEndpointPath($path)) $this->sendTrackingResponse(204);
 
         $url = $this->trimValue((string) ($payload['url'] ?? $this->getCurrentRequestUrl()), 767);
 
@@ -2571,6 +2586,9 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         if($label === '') $label = $this->trimValue((string) ($extra['text'] ?? ''), 255);
         $target = $this->trimValue((string) ($extra['target'] ?? ''), 767);
         if($target === '') $target = $this->trimValue((string) ($extra['href'] ?? ''), 767);
+
+        // Never record an event whose path is the tracking endpoint itself.
+        if($this->isEndpointPath($path)) $this->sendTrackingResponse(204);
 
         $row = [
             'created_at' => date('Y-m-d H:i:s'),
@@ -3555,7 +3573,9 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         if($page && $page->id && !$this->is404Page($page)) {
             return $this->getCanonicalPagePath($page);
         }
-        return $this->getRequestedPathWithoutQuery();
+        $path = $this->getRequestedPathWithoutQuery();
+        // Don't let the analytics endpoints leak in as a fallback path.
+        return $this->isEndpointPath($path) ? '/' : $path;
     }
 
     protected function normalizePath($path) {

@@ -1,10 +1,10 @@
-NativeAnalytics 1.0.27
+NativeAnalytics 1.0.29
 
 # NativeAnalytics
 
 Native first-party analytics module for ProcessWire CMS. It tracks traffic and engagement directly inside ProcessWire, without Google Analytics or external APIs.
 
-## Features in v1.0.27
+## Features in v1.0.29
 
 NativeAnalytics is a first-party analytics dashboard for ProcessWire. It keeps the tracking data inside your ProcessWire installation and does not rely on Google Analytics, external tracking scripts or remote analytics APIs.
 
@@ -248,3 +248,16 @@ Thanks to **[adrianbj](https://github.com/adrianbj)** for all five improvements 
 
 - **Fixed the tracking endpoint being recorded as a pageview.** On some setups (ProcessWire installed in a subdirectory, behind a reverse proxy, or where the `/pwna-track/` request was not recognised as the analytics endpoint) the endpoint's own path could leak into stored hits. The result was that **Top pages**, **Top landing pages** and **Top exit pages** all showed only `/pwna-track/`, with sessions started equal to sessions ended. A new `isEndpointPath()` guard now hard-excludes `/pwna-track/` and `/pwna-realtime/` from being stored as a pageview or event, and the `getRequestPathForStorage()` fallback can no longer return an endpoint path. Existing `/pwna-track/` rows can be cleaned up via the suspicious-path removal tool.
 - Updated module version metadata to `1.0.27` / integer `1027`.
+
+## 1.0.29 notes
+
+Thanks again to **[adrianbj](https://github.com/adrianbj)** for all six improvements in this release.
+
+- **Made the dashboard tab assembly hookable (PR #15).** Added hookable `___getTabLabels()` (a single slug => label registry in display order) and `___getTabs(array $tabs)` (receives the slug-keyed panel content). `getActiveTab()`, `renderTabNav()` and `renderWireTabsScript()` now read from `getTabLabels()` instead of each carrying a hardcoded copy, and `___execute()` builds panels keyed by slug before passing them through `getTabs()`. Companion modules can now register their own tabs (label plus content) without patching `ProcessNativeAnalytics`. Behaviour is unchanged for the built-in tabs. (adrianbj, PR #15)
+- **Hourly cron now rebuilds yesterday's aggregates too (PR #14).** `markBehavioralBots()` runs hourly with a 24h lookback, so it can flag rows dated yesterday (e.g. a rotating-proxy fleet or scanner run that only becomes statistically detectable after midnight). Those late flags were not reflected in yesterday's already-built daily aggregate. `handleHourlyCron()` now rebuilds the daily/event/goal aggregates for both yesterday and today, so late-flagged bots are dropped from historical totals. (adrianbj, PR #14)
+- **Dashboard trend charts now live-update on the realtime poll (PR #13).** The four trend charts (traffic, hourly, engagement, goals) now refresh on the existing 10-second realtime poll — the same poll that already updates the summary cards — without a full page reload, via a new `liveCharts` flag and `updateCharts()` handler. This build also fixes the latest-slot payload so the hourly chart updates the selected/current hour instead of the final `23:00` slot. (adrianbj, PR #13)
+- **Classifier-flagged bot sessions are now hidden from the Current visitors panel (PR #12).** Aggregate queries already excluded `is_bot = 1` rows via `buildWhere()`, but the live Current visitors panel did not. `getCurrentVisitors()` now also excludes visitor hashes flagged as bots within the last day, so the live panel matches the rest of the dashboard. (adrianbj, PR #12)
+- **Added a "Find page" autocomplete to the dashboard toolbars (PR #11).** A search-as-you-type control sits beside the existing numeric Page ID filter in both toolbars and suggests only real ProcessWire pages that have recorded non-bot, non-404 analytics data, via a new `___executePageSearch()` endpoint. (adrianbj, PR #11)
+- **Fixed the current-visitors count/list mismatch (PR #10).** The "Current visitors" card count and the list below it could disagree (card shows N, list shows fewer or "no active visitors"). Both the summary and the list now draw from the same fixed fetch pool (`CURRENT_VISITORS_FETCH_LIMIT`) and apply the same bot/probe filtering before deduplicating by visitor, so the number and the rows always agree. (adrianbj, PR #10)
+- **Made direct dashboard uninstall non-destructive.** Uninstalling `ProcessNativeAnalytics` directly now removes only the dashboard admin page/registry entry and no longer cascades into uninstalling the main `NativeAnalytics` module. Full data removal remains tied to uninstalling the main module itself.
+- Updated module version metadata to `1.0.29` / integer `1029` for both NativeAnalytics and the dashboard process module.

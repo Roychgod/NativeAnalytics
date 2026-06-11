@@ -6,7 +6,7 @@ class ProcessNativeAnalytics extends Process {
         return [
             'title' => 'NativeAnalytics Dashboard',
             'summary' => 'Dashboard for the NativeAnalytics module.',
-            'version' => 1027,
+            'version' => 1029,
             'author' => 'Pyxios - Roych (www.pyxios.com)',
             'permission' => 'nativeanalytics-view',
             'icon' => 'area-chart',
@@ -72,29 +72,26 @@ class ProcessNativeAnalytics extends Process {
     }
 
     public function uninstall() {
-        $session = $this->wire('session');
-        $modules = $this->wire('modules');
-
+        // The dashboard/process module must only remove its own admin page and registry
+        // data. It must not cascade into uninstalling NativeAnalytics itself, because
+        // the main module uninstall is the operation that intentionally drops stored
+        // analytics tables. This keeps a direct dashboard uninstall non-destructive.
         try {
-            $mode = (string) $session->getFor('NativeAnalytics', 'uninstall_mode');
-            if($mode !== 'main-direct' && $mode !== 'dashboard-direct' && $modules->isInstalled('NativeAnalytics')) {
-                $session->setFor('NativeAnalytics', 'uninstall_mode', 'dashboard-direct');
-                try {
-                    $modules->uninstall('NativeAnalytics');
-                } catch(\Throwable $e) {
-                    $this->wire('log')->save('native-analytics', 'Cascade uninstall from dashboard failed: ' . $e->getMessage());
-                }
-            }
             $this->cleanupAdminPages();
-            $this->cleanupModuleRegistry(['ProcessNativeAnalytics', 'NativeAnalytics']);
+            $this->cleanupModuleRegistry(['ProcessNativeAnalytics']);
             try {
                 $this->wire('modules')->refresh();
             } catch(\Throwable $e) {
                 $this->wire('log')->save('native-analytics', 'Modules refresh after dashboard uninstall failed: ' . $e->getMessage());
             }
         } finally {
-            if((string) $session->getFor('NativeAnalytics', 'uninstall_mode') === 'dashboard-direct') {
-                $session->removeFor('NativeAnalytics', 'uninstall_mode');
+            try {
+                $session = $this->wire('session');
+                if((string) $session->getFor('NativeAnalytics', 'uninstall_mode') === 'dashboard-direct') {
+                    $session->removeFor('NativeAnalytics', 'uninstall_mode');
+                }
+            } catch(\Throwable $e) {
+                // non-fatal during uninstall cleanup
             }
         }
     }
@@ -258,8 +255,8 @@ public function ___execute() {
     $overviewContent = $this->renderToolbar($rangeMeta, $pageId, $template, $templates, 'overview');
     $overviewContent .= $this->renderCards($summary, $current, $summary404, $quality);
     $overviewContent .= '<div class="pwna-grid-2">';
-    $overviewContent .= '<div class="pwna-panel"><h2>Traffic trend</h2><p class="pwna-note">Daily totals for the selected period.</p>' . $analytics->renderLineChart($series, 'views', 'Traffic trend by day') . '</div>';
-    $overviewContent .= '<div class="pwna-panel"><h2>Traffic by hour</h2><p class="pwna-note">Hover a point to see the hour, views, uniques and sessions for the last day in the selected range.</p>' . $analytics->renderLineChart($hourlySeries, 'views', 'Traffic by hour for selected day') . '</div>';
+    $overviewContent .= '<div class="pwna-panel"><h2>Traffic trend</h2><p class="pwna-note">Daily totals for the selected period.</p>' . $analytics->renderLineChart($series, 'views', 'Traffic trend by day', [], 'daily') . '</div>';
+    $overviewContent .= '<div class="pwna-panel"><h2>Traffic by hour</h2><p class="pwna-note">Hover a point to see the hour, views, uniques and sessions for the last day in the selected range.</p>' . $analytics->renderLineChart($hourlySeries, 'views', 'Traffic by hour for selected day', [], 'hourly') . '</div>';
     $overviewContent .= '</div>';
     $overviewContent .= '<div class="pwna-grid-2">';
     $overviewContent .= $this->renderSimpleTable('Top pages', ['Page', 'Views', 'Uniques', 'Sessions'], $this->mapTopPages($pages), true);
@@ -274,7 +271,7 @@ public function ___execute() {
     $compareContent .= $this->renderComparePanel($analytics, $rangeMeta, $compareMeta, $summary, $compareSummary, $quality, $compareQuality, $summary404, $compareSummary404, $series, $compareSeries, $pageId, $template, $templates);
 
     $engagementMetricsContent = $this->renderEventCards($eventSummary, $eventFormSummary, $eventDownloadSummary, $eventContactSummary, $eventNavigationSummary);
-    $engagementMetricsContent .= '<div class="pwna-panel"><h2>Engagement trend</h2><p class="pwna-note">Tracked actions over time for the selected period.</p>' . $analytics->renderLineChart($eventSeries, 'views', 'Tracked actions by day') . '</div>';
+    $engagementMetricsContent .= '<div class="pwna-panel"><h2>Engagement trend</h2><p class="pwna-note">Tracked actions over time for the selected period.</p>' . $analytics->renderLineChart($eventSeries, 'views', 'Tracked actions by day', ['views' => 'Events', 'uniques' => 'Uniques', 'sessions' => 'Sessions'], 'events') . '</div>';
     $engagementMetricsContent .= '<div class="pwna-grid-2">';
     $engagementMetricsContent .= $this->renderSimpleTable('Top tracked actions', ['Action', 'Events', 'Unique visitors', 'Sessions'], $this->mapEventRows($topEvents), true);
     $engagementMetricsContent .= $this->renderSimpleTable('Top action targets', ['Target', 'Group', 'Events', 'Sessions'], $this->mapEventTargetRows($topEventTargets), true);
@@ -321,27 +318,33 @@ public function ___execute() {
         $techContent .= $this->renderHealthPanel($health);
     }
 
+    $tabLabels = $this->getTabLabels();
+    $tabContent = $this->getTabs([
+        'overview' => $overviewContent,
+        'engagement' => $engagementContent,
+        'goals' => $goalsContent,
+        'compare' => $compareContent,
+        'sources' => $sourcesContent,
+        'tech' => $techContent,
+    ]);
+    if(!isset($tabContent[$activeTab])) {
+        $keys = array_keys($tabContent);
+        $activeTab = $keys ? (string) reset($keys) : 'overview';
+    }
+    $activeContent = $tabContent[$activeTab] ?? '';
+
     if($wireTabs) {
+        $wireTabItems = [];
+        foreach($tabContent as $key => $content) {
+            $wireTabItems[$tabLabels[$key] ?? ucfirst((string) $key)] = $content;
+        }
         $out .= '<div id="pwna-wiretabs" class="pwna-wiretabs">';
-        $out .= $wireTabs->render([
-            'Overview' => $overviewContent,
-            'Engagement' => $engagementContent,
-            'Goals' => $goalsContent,
-            'Compare' => $compareContent,
-            'Sources' => $sourcesContent,
-            'System' => $techContent,
-        ]);
+        $out .= $wireTabs->render($wireTabItems);
         $out .= '</div>';
     } else {
         $out .= $this->renderTabNav($activeTab, $rangeMeta, $pageId, $template, $compareMeta['selected']);
         $out .= '<div class="pwna-tab-panels">';
-        $out .= '<section class="pwna-tab-panel">' . (
-            $activeTab === 'engagement' ? $engagementContent : (
-            $activeTab === 'goals' ? $goalsContent : (
-            $activeTab === 'compare' ? $compareContent : (
-            $activeTab === 'sources' ? $sourcesContent : (
-            $activeTab === 'tech' ? $techContent : $overviewContent
-        ))))) . '</section>';
+        $out .= '<section class="pwna-tab-panel">' . $activeContent . '</section>';
         $out .= '</div>';
     }
 
@@ -350,6 +353,7 @@ public function ___execute() {
     $out .= $this->renderExportDropdownScript();
     $out .= $this->renderHelperToolsScript();
     $out .= $this->renderAutoRefreshScript($rangeMeta, (int) $analytics->realtimeWindowMinutes, $pageId, $template);
+    $out .= $this->renderPageSearchScript();
     if($wireTabs) $out .= $this->renderWireTabsScript($activeTab, $engagementView);
     $out .= '</div>';
     return $out;
@@ -413,6 +417,52 @@ public function ___execute() {
         $lines = $this->buildReportLines($report);
         $docx = $this->buildSimpleDocx($lines);
         $this->sendDownloadResponse($docx, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'native-analytics-report-' . date('Ymd-His') . '.docx');
+    }
+
+    protected function sendJsonResponse(array $payload, $statusCode = 200) {
+        if(function_exists('session_write_close')) @session_write_close();
+        while(ob_get_level() > 0) {
+            @ob_end_clean();
+        }
+        http_response_code((int) $statusCode);
+        header('Content-Type: application/json; charset=utf-8');
+        header('Cache-Control: no-store, no-cache, must-revalidate');
+        header('X-Content-Type-Options: nosniff');
+        echo json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
+        exit;
+    }
+
+    public function ___executePageSearch() {
+        if(!$this->user->hasPermission('nativeanalytics-view')) {
+            $this->sendJsonResponse(['ok' => false, 'results' => []], 403);
+        }
+        /** @var NativeAnalytics $analytics */
+        $analytics = $this->modules->get('NativeAnalytics');
+        $term = trim((string) $this->input->get('q'));
+        $limit = max(1, min(20, (int) ($this->input->get('limit') ?: 10)));
+        $termLength = function_exists('mb_strlen') ? mb_strlen($term) : strlen($term);
+        if($term === '' || $termLength < 2 || !$analytics || !method_exists($analytics, 'searchPagesWithData')) {
+            $this->sendJsonResponse(['ok' => true, 'results' => []]);
+        }
+        $rows = $analytics->searchPagesWithData($term, $limit);
+        $results = [];
+        foreach($rows as $row) {
+            $pageId = (int) ($row['page_id'] ?? 0);
+            $title = trim(strip_tags((string) ($row['page_title'] ?? '')));
+            $path = (string) ($row['path'] ?? '');
+            $template = (string) ($row['template'] ?? '');
+            $label = ($title !== '' ? $title : ($path !== '' ? $path : ('Page #' . $pageId)));
+            if($path !== '') $label .= ' — ' . $path;
+            $results[] = [
+                'page_id' => $pageId,
+                'title' => $title,
+                'path' => $path,
+                'template' => $template,
+                'views' => (int) ($row['views'] ?? 0),
+                'label' => $label,
+            ];
+        }
+        $this->sendJsonResponse(['ok' => true, 'results' => $results]);
     }
 
     protected function sendDownloadResponse($content, $contentType, $filename) {
@@ -840,6 +890,7 @@ protected function renderToolbar(array $rangeMeta, $pageId, $template, array $te
     $out .= '<label>From <input type="date" name="from_date" value="' . $this->sanitizer->entities($rangeMeta['fromDate']) . '"></label>';
     $out .= '<label>To <input type="date" name="to_date" value="' . $this->sanitizer->entities($rangeMeta['toDate']) . '"></label>';
     $out .= '<label>Page ID <input type="number" min="1" name="page_id" value="' . ($pageId > 0 ? (int) $pageId : '') . '"></label>';
+    $out .= '<label class="pwna-pagefinder-label">Find page <input type="search" class="pwna-pagefinder" data-pwna-page-search="./page-search/" data-pwna-page-target="page_id" placeholder="Title, path or ID" autocomplete="off"></label>';
     $out .= '<label>Template <select name="template"><option value="">All templates</option>';
     foreach($templates as $row) {
         $value = $row['label'];
@@ -901,6 +952,7 @@ protected function renderCompareToolbar(array $rangeMeta, array $compareMeta, $p
     }
     $out .= '</select></label>';
     $out .= '<label>Page ID <input type="number" min="1" name="page_id" value="' . ($pageId > 0 ? (int) $pageId : '') . '"></label>';
+    $out .= '<label class="pwna-pagefinder-label">Find page <input type="search" class="pwna-pagefinder" data-pwna-page-search="./page-search/" data-pwna-page-target="page_id" placeholder="Title, path or ID" autocomplete="off"></label>';
     $out .= '<label>Template <select name="template"><option value="">All templates</option>';
     foreach($templates as $row) {
         $value = $row['label'];
@@ -1022,14 +1074,7 @@ protected function renderWireTab($id, $title, $content, $isActive = false, $extr
 }
 
 protected function renderWireTabsScript($activeTab, $engagementView) {
-    $labels = [
-        'overview' => 'Overview',
-        'engagement' => 'Engagement',
-        'goals' => 'Goals',
-        'compare' => 'Compare',
-        'sources' => 'Sources',
-        'tech' => 'System',
-    ];
+    $labels = $this->getTabLabels();
     $payload = [
         'initialSlug' => in_array($activeTab, array_keys($labels), true) ? $activeTab : 'overview',
         'hasExplicitMainTab' => $this->input->get('tab') ? true : false,
@@ -1215,9 +1260,25 @@ protected function renderEngagementPanels($metricsContent, $helperContent, $acti
     return $out;
 }
 
+public function ___getTabLabels() {
+    return [
+        'overview' => 'Overview',
+        'engagement' => 'Engagement',
+        'goals' => 'Goals',
+        'compare' => 'Compare',
+        'sources' => 'Sources',
+        'tech' => 'System',
+    ];
+}
+
+public function ___getTabs(array $tabs) {
+    return $tabs;
+}
+
 protected function getActiveTab() {
+    $labels = $this->getTabLabels();
     $tab = $this->sanitizer->name((string) $this->input->get('tab'));
-    if(!in_array($tab, ['overview', 'engagement', 'goals', 'compare', 'sources', 'tech'], true)) $tab = 'overview';
+    if(!isset($labels[$tab])) $tab = 'overview';
     return $tab;
 }
 
@@ -1244,32 +1305,21 @@ protected function getCompareMeta(NativeAnalytics $analytics, array $rangeMeta) 
 }
 
 protected function renderTabNav($activeTab, array $rangeMeta, $pageId, $template, $selectedCompare) {
-    $base = [
-        'range' => $rangeMeta['selectedRange'],
-        'from_date' => $rangeMeta['fromDate'],
-        'to_date' => $rangeMeta['toDate'],
-        'compare' => $selectedCompare,
-    ];
-    if($pageId > 0) $base['page_id'] = (int) $pageId;
-    if($template !== '') $base['template'] = (string) $template;
-    $tabs = [
-        'overview' => 'Overview',
-        'engagement' => 'Engagement',
-        'goals' => 'Goals',
-        'compare' => 'Compare',
-        'sources' => 'Sources',
-        'tech' => 'System',
-    ];
+    $tabs = $this->getTabLabels();
     $out = '<nav class="pwna-tabs">';
     foreach($tabs as $key => $label) {
-        $params = $base;
-        $params['tab'] = $key;
-        $class = 'pwna-tab' . ($activeTab === $key ? ' is-active' : '');
-        $out .= '<a class="' . $class . '" href="./?' . $this->sanitizer->entities(http_build_query($params)) . '">' . $this->sanitizer->entities($label) . '</a>';
+        $params = ['tab' => $key, 'range' => $rangeMeta['selectedRange'], 'from_date' => $rangeMeta['fromDate'], 'to_date' => $rangeMeta['toDate']];
+        if($pageId > 0) $params['page_id'] = (int) $pageId;
+        if($template !== '') $params['template'] = $template;
+        if($key === 'compare') $params['compare'] = $selectedCompare;
+        if($key === 'engagement') $params['engage_view'] = $this->getEngagementView();
+        $class = $activeTab === $key ? ' class="is-active"' : '';
+        $out .= '<a' . $class . ' href="?' . http_build_query($params) . '">' . $this->sanitizer->entities($label) . '</a>';
     }
     $out .= '</nav>';
     return $out;
 }
+
 
 protected function renderGoalsIntroPanel() {
     $out = '<div class="pwna-panel pwna-goals-intro-panel">';
@@ -1423,7 +1473,7 @@ protected function renderGoalTrendPanel(NativeAnalytics $analytics, array $goalS
     }
 
     $out .= '<p class="pwna-note">Daily goal completions for active goals in the selected period.</p>';
-    $out .= $analytics->renderLineChart($goalSeries, 'views', 'Goal conversions by day', ['views' => 'Conversions', 'uniques' => 'Unique visitors', 'sessions' => 'Sessions']);
+    $out .= $analytics->renderLineChart($goalSeries, 'views', 'Goal conversions by day', ['views' => 'Conversions', 'uniques' => 'Unique visitors', 'sessions' => 'Sessions'], 'goals');
     $out .= '</div>';
     return $out;
 }
@@ -1967,9 +2017,9 @@ if(document.readyState === "loading") { document.addEventListener("DOMContentLoa
 }
 
 protected function renderChartTooltipScript() {
-    return '<script' . $this->getScriptNonceAttribute() . '>(function(){function init(){document.querySelectorAll(".pwna-chart-wrap").forEach(function(wrap){var tip=wrap.querySelector(".pwna-chart-tooltip");if(!tip||wrap.dataset.pwnaTipInit==="1")return;wrap.dataset.pwnaTipInit="1";var dayEl=tip.querySelector(".pwna-chart-tooltip-day");var timeEl=tip.querySelector(".pwna-chart-tooltip-time");var viewsEl=tip.querySelector("[data-pwna-tip=views]");var uniquesEl=tip.querySelector("[data-pwna-tip=uniques]");var sessionsEl=tip.querySelector("[data-pwna-tip=sessions]");var compareWrap=tip.querySelector(".pwna-chart-tooltip-compare");var compareDay=tip.querySelector("[data-pwna-tip=compare-day]");var compareViews=tip.querySelector("[data-pwna-tip=compare-views]");var compareUniques=tip.querySelector("[data-pwna-tip=compare-uniques]");var compareSessions=tip.querySelector("[data-pwna-tip=compare-sessions]");function place(ev){var rect=wrap.getBoundingClientRect();var x=(ev.clientX-rect.left)+14;var y=(ev.clientY-rect.top)-12;var maxX=Math.max(8, rect.width-tip.offsetWidth-8);var maxY=Math.max(8, rect.height-tip.offsetHeight-8);tip.style.left=Math.max(8, Math.min(x, maxX))+"px";tip.style.top=Math.max(8, Math.min(y, maxY))+"px";}function activate(point,ev){wrap.querySelectorAll(".pwna-point.is-active").forEach(function(el){el.classList.remove("is-active");});point.classList.add("is-active");dayEl.textContent=point.getAttribute("data-label")||"";var timeText=point.getAttribute("data-time")||"";timeEl.textContent=timeText;timeEl.hidden=!timeText;viewsEl.textContent=point.getAttribute("data-views")||"0";uniquesEl.textContent=point.getAttribute("data-uniques")||"0";sessionsEl.textContent=point.getAttribute("data-sessions")||"0";var hasCompare=point.hasAttribute("data-compare-label");if(compareWrap){compareWrap.hidden=!hasCompare;if(hasCompare){compareDay.textContent=point.getAttribute("data-compare-label")||"";compareViews.textContent=point.getAttribute("data-compare-views")||"0";compareUniques.textContent=point.getAttribute("data-compare-uniques")||"0";compareSessions.textContent=point.getAttribute("data-compare-sessions")||"0";}}tip.hidden=false;place(ev);}wrap.querySelectorAll(".pwna-point").forEach(function(point){point.addEventListener("mouseenter", function(ev){activate(point,ev);});point.addEventListener("mousemove", function(ev){place(ev);});});wrap.addEventListener("mouseleave", function(){wrap.querySelectorAll(".pwna-point.is-active").forEach(function(el){el.classList.remove("is-active");});tip.hidden=true;});});}if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded", init);}else{init();}})();</script>';
+    $nonce = $this->getScriptNonceAttribute();
+    return '<script' . $nonce . '>(function(){function init(){document.querySelectorAll(".pwna-chart-wrap").forEach(function(wrap){if(wrap.dataset.pwnaTooltipInit==="1")return;wrap.dataset.pwnaTooltipInit="1";var tip=wrap.querySelector(".pwna-chart-tooltip");if(!tip)return;var dayEl=tip.querySelector(".pwna-chart-tooltip-day:not([data-pwna-tip])");var timeEl=tip.querySelector(".pwna-chart-tooltip-time");var viewsEl=tip.querySelector("[data-pwna-tip=views]");var uniquesEl=tip.querySelector("[data-pwna-tip=uniques]");var sessionsEl=tip.querySelector("[data-pwna-tip=sessions]");var compareWrap=tip.querySelector(".pwna-chart-tooltip-compare");var compareDay=tip.querySelector("[data-pwna-tip=compare-day]");var compareViews=tip.querySelector("[data-pwna-tip=compare-views]");var compareUniques=tip.querySelector("[data-pwna-tip=compare-uniques]");var compareSessions=tip.querySelector("[data-pwna-tip=compare-sessions]");function place(ev){if(!ev)return;var rect=wrap.getBoundingClientRect();var x=(ev.clientX-rect.left)+14;var y=(ev.clientY-rect.top)-12;var maxX=Math.max(8,rect.width-tip.offsetWidth-8);var maxY=Math.max(8,rect.height-tip.offsetHeight-8);tip.style.left=Math.max(8,Math.min(x,maxX))+"px";tip.style.top=Math.max(8,Math.min(y,maxY))+"px";}function activate(point,ev){wrap.querySelectorAll(".pwna-point.is-active").forEach(function(el){el.classList.remove("is-active");});point.classList.add("is-active");if(dayEl)dayEl.textContent=point.getAttribute("data-label")||"";var timeText=point.getAttribute("data-time")||"";if(timeEl){timeEl.textContent=timeText;timeEl.hidden=!timeText;}if(viewsEl)viewsEl.textContent=point.getAttribute("data-views")||"0";if(uniquesEl)uniquesEl.textContent=point.getAttribute("data-uniques")||"0";if(sessionsEl)sessionsEl.textContent=point.getAttribute("data-sessions")||"0";var hasCompare=point.hasAttribute("data-compare-label");if(compareWrap){compareWrap.hidden=!hasCompare;if(hasCompare){if(compareDay)compareDay.textContent=point.getAttribute("data-compare-label")||"";if(compareViews)compareViews.textContent=point.getAttribute("data-compare-views")||"0";if(compareUniques)compareUniques.textContent=point.getAttribute("data-compare-uniques")||"0";if(compareSessions)compareSessions.textContent=point.getAttribute("data-compare-sessions")||"0";}}tip.hidden=false;place(ev);}wrap.querySelectorAll(".pwna-point").forEach(function(point){if(point.dataset.pwnaTooltipPoint==="1")return;point.dataset.pwnaTooltipPoint="1";point.addEventListener("mouseenter",function(ev){activate(point,ev);});point.addEventListener("mousemove",function(ev){place(ev);});});wrap.addEventListener("mouseleave",function(){wrap.querySelectorAll(".pwna-point.is-active").forEach(function(el){el.classList.remove("is-active");});tip.hidden=true;});});}window.PWNA_initChartTooltips=init;if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",init);}else{init();}})();</script>';
 }
-
         protected function renderAutoRefreshScript(array $rangeMeta, $minutes, $pageId, $template) {
         /** @var NativeAnalytics $analytics */
         $analytics = $this->modules->get('NativeAnalytics');
@@ -1983,6 +2033,10 @@ protected function renderChartTooltipScript() {
             'pageId' => (int) $pageId,
             'template' => (string) $template,
             'canBlock' => $this->user->hasPermission('nativeanalytics-manage'),
+            'csrfName' => $this->session->CSRF->getTokenName(),
+            'csrfValue' => $this->session->CSRF->getTokenValue(),
+            'chartGeometry' => $analytics->getChartGeometry(),
+            'liveCharts' => ((string) $rangeMeta['fromDate'] === '' && (string) $rangeMeta['toDate'] === ''),
         ];
         $json = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
         if($json === false) $json = '{}';
@@ -1997,19 +2051,11 @@ protected function renderChartTooltipScript() {
     try {
       var out = new Intl.NumberFormat(undefined, { minimumFractionDigits: d || 0, maximumFractionDigits: d || 0 }).format(num);
       return out + (suf || '');
-    } catch(e) {
-      return String(num) + (suf || '');
-    }
+    } catch(e) { return String(num) + (suf || ''); }
   }
-  function esc(s) {
-    return String(s == null ? '' : s).replace(/[&<>"]/g, function(c) {
-      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c] || c;
-    });
-  }
-  function setText(sel, val) {
-    var el = document.querySelector(sel);
-    if(el) el.textContent = val;
-  }
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c] || c; }); }
+  function attrEsc(s) { return String(s == null ? '' : s).replace(/\\/g,'\\\\').replace(/"/g,'\\"'); }
+  function setText(sel, val) { var el = document.querySelector(sel); if(el) el.textContent = val; }
   function updateCards(data) {
     if(!data) return;
     setText('[data-pwna-card=views]', fmt(data.summary && data.summary.views));
@@ -2017,11 +2063,7 @@ protected function renderChartTooltipScript() {
     setText('[data-pwna-card=sessions]', fmt(data.summary && data.summary.sessions));
     setText('[data-pwna-card=avg_pages_per_session]', fmt(data.sessionQuality && data.sessionQuality.avg_pages_per_session, 2));
     setText('[data-pwna-card=single_page_rate]', fmt(data.sessionQuality && data.sessionQuality.single_page_rate, 1, '%'));
-    (function(){
-      var secs = data.sessionQuality && data.sessionQuality.avg_time_on_page ? parseInt(data.sessionQuality.avg_time_on_page, 10) : 0;
-      var label = secs > 0 ? (secs >= 60 ? Math.floor(secs/60) + 'm ' + (secs%60) + 's' : secs + 's') : '\u2014';
-      setText('[data-pwna-card=avg_time_on_page]', label);
-    }());
+    (function(){ var secs = data.sessionQuality && data.sessionQuality.avg_time_on_page ? parseInt(data.sessionQuality.avg_time_on_page, 10) : 0; var label = secs > 0 ? (secs >= 60 ? Math.floor(secs/60) + 'm ' + (secs%60) + 's' : secs + 's') : '—'; setText('[data-pwna-card=avg_time_on_page]', label); }());
     setText('[data-pwna-card=current_visitors]', fmt(data.current && (data.current.current_uniques || data.current.current_visitors)));
     setText('[data-pwna-card=hits_404]', fmt(data.summary404 && data.summary404.views));
     setText('#pwna-health-hits', fmt(data.health && data.health.hits_count));
@@ -2032,30 +2074,102 @@ protected function renderChartTooltipScript() {
     setText('#pwna-health-last-session', (data.health && data.health.last_session_at) || '—');
     setText('#pwna-health-last-event', (data.health && data.health.last_event_at) || '—');
   }
+  function blockForm(hash) {
+    if(!cfg.canBlock || !hash) return '';
+    var shortHash = String(hash).substring(0, 12);
+    return '<form method="post" style="display:inline" onsubmit="return confirm(\'Block this IP from future tracking? This will silently drop all requests from this visitor.\');">'
+      + '<input type="hidden" name="' + esc(cfg.csrfName || '') + '" value="' + esc(cfg.csrfValue || '') + '">'
+      + '<input type="hidden" name="pwna_action" value="block_ip">'
+      + '<input type="hidden" name="ip_hash" value="' + esc(hash) + '">'
+      + '<button type="submit" class="pwna-secondary-btn" title="Block this visitor IP (hash: ' + esc(shortHash) + '…)" style="padding:2px 8px;font-size:11px;">Block</button>'
+      + '</form>';
+  }
   function renderCurrent(rows) {
-    if(cfg.canBlock) return; // server-rendered with Action column; don't overwrite
     var note = document.getElementById('pwna-current-note');
     if(note) note.textContent = 'Active in the last ' + cfg.minutes + ' minutes.';
     var wrap = document.getElementById('pwna-current-body');
     if(!wrap) return;
-    if(!rows || !rows.length) {
-      wrap.innerHTML = '<p class="pwna-empty">No active visitors right now.</p>';
-      return;
-    }
-    var html = '<div class="pwna-table-wrap"><table class="pwna-table"><thead><tr><th>Page</th><th>Device</th><th>Browser</th><th>Last seen</th></tr></thead><tbody>';
-    rows.forEach(function(row) {
+    if(!rows || !rows.length) { wrap.innerHTML = '<p class="pwna-empty">No active visitors right now.</p>'; return; }
+    var heads = cfg.canBlock ? '<th>Action</th>' : '';
+    var html = '<div class="pwna-table-wrap"><table class="pwna-table"><thead><tr><th>Page</th><th>Device</th><th>Browser</th><th>Last seen</th>' + heads + '</tr></thead><tbody>';
+    rows.forEach(function(row){
       var page = esc(row.current_path || '/');
       var title = String(row.page_title || '').replace(/<[^>]*>/g, '').trim();
-      if(title) {
-        page = '<strong>' + esc(title) + '</strong><br><span class="pwna-muted">' + esc(row.current_path || '/') + '</span>';
-      }
+      if(title) page = '<strong>' + esc(title) + '</strong><br><span class="pwna-muted">' + esc(row.current_path || '/') + '</span>';
       if(Number(row.status_code || 200) === 404) page += '<br><span class="pwna-badge">404</span>';
-      html += '<tr><td>' + page + '</td><td>' + esc(row.device_type || '') + '</td><td>' + esc(row.browser || '') + '</td><td>' + esc(row.last_seen_at || '') + '</td></tr>';
+      html += '<tr><td>' + page + '</td><td>' + esc(row.device_type || '') + '</td><td>' + esc(row.browser || '') + '</td><td>' + esc(row.last_seen_at || '') + '</td>';
+      if(cfg.canBlock) html += '<td>' + blockForm(row.ip_hash || '') + '</td>';
+      html += '</tr>';
     });
     html += '</tbody></table></div>';
     wrap.innerHTML = html;
   }
-  function refresh() {
+  function updateCharts(slots) {
+    if(!slots || !cfg.liveCharts || !cfg.chartGeometry) return;
+    Object.keys(slots).forEach(function(id){
+      var wrap = document.querySelector('[data-pwna-chart-live="' + attrEsc(id) + '"]');
+      var slot = slots[id];
+      if(!wrap || !slot) return;
+      var key = String(slot.key == null ? '' : slot.key);
+      var point = wrap.querySelector('.pwna-point[data-key="' + attrEsc(key) + '"]');
+      if(!point) { refetchCharts(); return; }
+      var g = cfg.chartGeometry;
+      var metric = Number(slot.views || 0);
+      var max = 1;
+      wrap.querySelectorAll('.pwna-point').forEach(function(p){ max = Math.max(max, Number(p.getAttribute('data-views') || 0), metric); });
+      var points = [];
+      var all = Array.prototype.slice.call(wrap.querySelectorAll('.pwna-point'));
+      all.forEach(function(p){
+        if(p === point) {
+          p.setAttribute('data-label', slot.label || p.getAttribute('data-label') || '');
+          if(slot.time) p.setAttribute('data-time', slot.time);
+          p.setAttribute('data-views', String(slot.views || 0));
+          p.setAttribute('data-uniques', String(slot.uniques || 0));
+          p.setAttribute('data-sessions', String(slot.sessions || 0));
+        }
+        var val = Number(p.getAttribute('data-views') || 0);
+        var y = Number(g.padY) + Number(g.plotHeight) - ((val / max) * Number(g.plotHeight));
+        p.setAttribute('cy', String(Math.round(y * 100) / 100));
+        points.push((p.getAttribute('cx') || '0') + ',' + p.getAttribute('cy'));
+      });
+      var line = wrap.querySelector('.pwna-line');
+      if(line) line.setAttribute('points', points.join(' '));
+      for(var i=0;i<=4;i++){
+        var v = Math.round((max / 4) * i);
+        var y2 = Number(g.padY) + Number(g.plotHeight) - ((v / max) * Number(g.plotHeight));
+        var grid = wrap.querySelector('[data-pwna-grid="' + i + '"]');
+        var label = wrap.querySelector('[data-pwna-grid-label="' + i + '"]');
+        if(grid){ grid.setAttribute('y1', String(Math.round(y2 * 100) / 100)); grid.setAttribute('y2', String(Math.round(y2 * 100) / 100)); }
+        if(label){ label.setAttribute('y', String(Math.round((y2 + 4) * 100) / 100)); label.textContent = String(v); }
+      }
+    });
+  }
+  var refetchingCharts = false;
+  function refetchCharts() {
+    if(refetchingCharts || !cfg.liveCharts) return;
+    var live = Array.prototype.slice.call(document.querySelectorAll('[data-pwna-chart-live]')).map(function(el){ return el.getAttribute('data-pwna-chart-live'); }).filter(Boolean);
+    if(!live.length) return;
+    refetchingCharts = true;
+    var url = buildUrl();
+    url.searchParams.set('render_charts', live.join(','));
+    fetch(url.toString(), { credentials: 'same-origin' })
+      .then(function(r){ return r.ok ? r.json() : null; })
+      .then(function(data){
+        if(!data || data.ok === false || !data.chartHtml) return;
+        Object.keys(data.chartHtml).forEach(function(id){
+          var wrap = document.querySelector('[data-pwna-chart-live="' + attrEsc(id) + '"]');
+          if(!wrap) return;
+          var holder = document.createElement('div');
+          holder.innerHTML = data.chartHtml[id];
+          var next = holder.firstElementChild;
+          if(next) wrap.replaceWith(next);
+        });
+        if(window.PWNA_initChartTooltips) window.PWNA_initChartTooltips();
+      })
+      .catch(function(){})
+      .then(function(){ refetchingCharts = false; });
+  }
+  function buildUrl() {
     var url = new URL(cfg.endpoint, window.location.origin);
     url.searchParams.set('range_days', String(cfg.rangeDays));
     url.searchParams.set('minutes', String(cfg.minutes));
@@ -2063,13 +2177,12 @@ protected function renderChartTooltipScript() {
     if(cfg.toDate) url.searchParams.set('to_date', cfg.toDate);
     if(cfg.pageId > 0) url.searchParams.set('page_id', String(cfg.pageId));
     if(cfg.template) url.searchParams.set('template', cfg.template);
-    fetch(url.toString(), { credentials: 'same-origin' })
-      .then(function(r) { return r.ok ? r.json() : null; })
-      .then(function(data) {
-        if(!data || data.ok === false) return;
-        updateCards(data);
-        renderCurrent(data.currentVisitors || []);
-      })
+    return url;
+  }
+  function refresh() {
+    fetch(buildUrl().toString(), { credentials: 'same-origin' })
+      .then(function(r){ return r.ok ? r.json() : null; })
+      .then(function(data){ if(!data || data.ok === false) return; updateCards(data); updateCharts(data.chartLatest || {}); renderCurrent(data.currentVisitors || []); })
       .catch(function(){});
   }
   refresh();
@@ -2078,6 +2191,59 @@ protected function renderChartTooltipScript() {
 </script>
 HTML;
         return str_replace(['__PWNA_NONCE__', '__PWNA_JSON__'], [$nonceAttr, $json], $script);
+    }
+
+
+    protected function renderPageSearchScript() {
+        $nonce = $this->getScriptNonceAttribute();
+        $script = <<<'HTML'
+<script__PWNA_NONCE__>
+(function(){
+  if(!window.fetch) return;
+  function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]||c;});}
+  function closeAll(except){document.querySelectorAll('.pwna-pagefinder-results').forEach(function(el){if(el!==except)el.remove();});}
+  function endpoint(input){return input.getAttribute('data-pwna-page-search') || './page-search/';}
+  function target(input){var form=input.closest('form');return form?form.querySelector('input[name="'+(input.getAttribute('data-pwna-page-target')||'page_id')+'"]'):null;}
+  function render(input, rows){
+    closeAll();
+    if(!rows || !rows.length) return;
+    var box=document.createElement('div');
+    box.className='pwna-pagefinder-results';
+    rows.forEach(function(row){
+      var btn=document.createElement('button');
+      btn.type='button';
+      btn.className='pwna-pagefinder-result';
+      btn.innerHTML='<strong>'+esc(row.title || row.path || ('Page #'+row.page_id))+'</strong><span>'+esc(row.path || '')+'</span><em>'+esc(row.template || '')+' · '+esc(row.views || 0)+' views</em>';
+      btn.addEventListener('click',function(){var t=target(input);if(t)t.value=row.page_id||'';input.value=row.title||row.path||row.label||'';closeAll();});
+      box.appendChild(btn);
+    });
+    input.parentNode.appendChild(box);
+  }
+  document.querySelectorAll('.pwna-pagefinder').forEach(function(input){
+    if(input.dataset.pwnaPageFinderInit==='1')return;
+    input.dataset.pwnaPageFinderInit='1';
+    var timer=null;
+    input.addEventListener('input',function(){
+      var q=input.value.trim();
+      clearTimeout(timer);
+      if(q.length<2){closeAll();return;}
+      timer=setTimeout(function(){
+        var url=new URL(endpoint(input), window.location.href);
+        url.searchParams.set('q', q);
+        url.searchParams.set('limit', '10');
+        fetch(url.toString(), {credentials:'same-origin'})
+          .then(function(r){return r.ok?r.json():null;})
+          .then(function(data){if(!data||data.ok===false)return;render(input,data.results||[]);})
+          .catch(function(){});
+      },180);
+    });
+    input.addEventListener('focus',function(){ if(input.value.trim().length>=2) input.dispatchEvent(new Event('input')); });
+  });
+  document.addEventListener('click',function(ev){ if(!ev.target.closest('.pwna-pagefinder-label')) closeAll(); });
+})();
+</script>
+HTML;
+        return str_replace('__PWNA_NONCE__', $nonce, $script);
     }
 
     protected function mapTopPages(array $rows) {

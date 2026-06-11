@@ -1679,3 +1679,47 @@ button.pwna-subtab {
 @media (max-width: 1000px) {
   .pwna-goals-intro-panel { grid-template-columns: 1fr; }
 }
+
+
+/* Page finder autocomplete */
+.pwna-pagefinder-label { position: relative; }
+.pwna-pagefinder-results {
+  position: absolute;
+  z-index: 1000;
+  left: 0;
+  right: 0;
+  top: calc(100% + 4px);
+  min-width: 280px;
+  max-height: 320px;
+  overflow: auto;
+  /* Inherit Konkat light/dark automatically via the shared --pwna-* tokens. */
+  background: var(--pwna-bg-panel);
+  color: var(--pwna-text);
+  border: 1px solid var(--pwna-border-strong);
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.28);
+  padding: 6px;
+}
+.pwna-pagefinder-result {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--pwna-text);
+  text-align: left;
+  border-radius: 6px;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+.pwna-pagefinder-result:hover,
+.pwna-pagefinder-result:focus {
+  background: var(--pwna-bg-soft);
+  color: var(--pwna-text);
+  outline: none;
+}
+.pwna-pagefinder-result strong,
+.pwna-pagefinder-result span,
+.pwna-pagefinder-result em { display: block; }
+.pwna-pagefinder-result strong { color: var(--pwna-text-strong); font-weight: 600; }
+.pwna-pagefinder-result span { color: var(--pwna-text-muted); font-size: 12px; }
+.pwna-pagefinder-result em { color: var(--pwna-text-muted2); font-size: 11px; font-style: normal; }

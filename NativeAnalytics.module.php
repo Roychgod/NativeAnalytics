@@ -1,8 +1,10 @@
 <?php namespace ProcessWire;
 
+require_once __DIR__ . '/lib/like-escape.php';
+
 class NativeAnalytics extends WireData implements Module, ConfigurableModule {
 
-    const VERSION = '1.0.27';
+    const VERSION = '1.0.29';
     const HITS_TABLE = 'pwna_hits';
     const DAILY_TABLE = 'pwna_daily';
     const SESSIONS_TABLE = 'pwna_sessions';
@@ -10,6 +12,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
     const EVENT_DAILY_TABLE = 'pwna_event_daily';
     const GOALS_TABLE = 'pwna_goals';
     const GOAL_DAILY_TABLE = 'pwna_goal_daily';
+    const CURRENT_VISITORS_FETCH_LIMIT = 1000;
 
     protected $defaults = [
         'trackingEnabled' => 1,
@@ -58,7 +61,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         return [
             'title' => 'NativeAnalytics',
             'summary' => 'Native first-party analytics dashboard for ProcessWire with traffic, compare, exports, event tracking and goals.',
-            'version' => 1027,
+            'version' => 1029,
             'author' => 'Pyxios - Roych (www.pyxios.com)',
             'href' => 'https://processwire.com/talk/topic/31808-native-analytics-%E2%80%94-a-native-analytics-module-for-processwire/',
             'repo' => 'https://github.com/Roychgod/NativeAnalytics',
@@ -1927,6 +1930,32 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         if($pageId > 0) $filters['page_id'] = $pageId;
         if($template !== '') $filters['template'] = $template;
 
+        $renderCharts = trim((string) $input->get('render_charts'));
+        if($renderCharts !== '') {
+            $allowed = ['daily', 'hourly', 'events', 'goals'];
+            $requested = array_filter(array_map('trim', explode(',', $renderCharts)));
+            $chartIds = array_values(array_intersect($allowed, $requested));
+            $this->sendTrackingResponse(200, [
+                'ok' => true,
+                'chartHtml' => $this->getLiveChartHtml($rangeSpec, $filters, $chartIds),
+                'ts' => date('c'),
+            ]);
+        }
+
+        $currentVisitors = $this->getCurrentVisitors($minutes, 25, $filters);
+        if($this->wire('user')->hasPermission('nativeanalytics-manage')) {
+            $visitorHashes = [];
+            foreach($currentVisitors as $row) {
+                if(!empty($row['visitor_hash'])) $visitorHashes[(string) $row['visitor_hash']] = true;
+            }
+            $visitorIpMap = $this->resolveVisitorIpHashes(array_keys($visitorHashes));
+            foreach($currentVisitors as &$row) {
+                $vh = (string) ($row['visitor_hash'] ?? '');
+                $row['ip_hash'] = ($vh !== '' && isset($visitorIpMap[$vh])) ? $visitorIpMap[$vh] : '';
+            }
+            unset($row);
+        }
+
         $payload = [
             'ok' => true,
             'summary' => $this->getSummary($rangeSpec, $filters),
@@ -1934,7 +1963,8 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             'summary404' => $this->get404Summary($rangeSpec),
             'sessionQuality' => $this->getSessionQuality($rangeSpec, $filters),
             'health' => $this->getHealthSnapshot(),
-            'currentVisitors' => $this->getCurrentVisitors($minutes, 25, $filters),
+            'chartLatest' => $this->getChartLatestSlots($rangeSpec, $filters),
+            'currentVisitors' => $currentVisitors,
             'minutes' => $minutes,
             'ts' => date('c'),
         ];
@@ -2702,10 +2732,11 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
 
     public function handleHourlyCron() {
         if(!empty($this->botFilterEnabled)) $this->markBehavioralBots(24);
-        $day = date('Y-m-d');
-        $this->rebuildDailyAggregate($day);
-        $this->rebuildEventDailyAggregate($day);
-        $this->rebuildGoalDailyAggregate($day);
+        foreach([date('Y-m-d', strtotime('-1 day')), date('Y-m-d')] as $day) {
+            $this->rebuildDailyAggregate($day);
+            $this->rebuildEventDailyAggregate($day);
+            $this->rebuildGoalDailyAggregate($day);
+        }
         $this->purgeOldRealtimeSessions();
     }
 
@@ -2956,6 +2987,31 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         return $stmt->fetch(\PDO::FETCH_ASSOC) ?: ['views' => 0, 'uniques' => 0];
     }
 
+    public function resolveVisitorIpHashes(array $visitorHashes) {
+        $visitorHashes = array_values(array_filter(array_unique(array_map('strval', $visitorHashes))));
+        if(!$visitorHashes) return [];
+        if(count($visitorHashes) > 1000) $visitorHashes = array_slice($visitorHashes, 0, 1000);
+
+        $map = [];
+        try {
+            $placeholders = implode(',', array_fill(0, count($visitorHashes), '?'));
+            $sql = "SELECT visitor_hash, ip_hash
+                    FROM `" . self::HITS_TABLE . "`
+                    WHERE visitor_hash IN ({$placeholders})
+                      AND ip_hash <> ''
+                    ORDER BY created_at DESC";
+            $stmt = $this->wire('database')->prepare($sql);
+            $stmt->execute($visitorHashes);
+            while($row = $stmt->fetch(\PDO::FETCH_ASSOC)) {
+                $vh = (string) ($row['visitor_hash'] ?? '');
+                if($vh !== '' && !isset($map[$vh])) $map[$vh] = (string) ($row['ip_hash'] ?? '');
+            }
+        } catch(\Throwable $e) {
+            $map = [];
+        }
+        return $map;
+    }
+
     public function getCurrentVisitorsSummary($minutes = null, array $filters = []) {
         $rows = $this->getCurrentVisitors($minutes, 1000, $filters);
         $count = count($rows);
@@ -2965,14 +3021,28 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
     public function getCurrentVisitors($minutes = null, $limit = 25, array $filters = []) {
         $minutes = $minutes ?: (int) $this->realtimeWindowMinutes;
         $where = $this->buildRealtimeWhere($minutes, $filters);
-        // Fetch more rows than needed, so we can filter out bot sessions
-        $fetchLimit = max(100, (int) $limit * 4);
+
+        // Fetch a fixed pool of recent sessions. A small multiplier can make the
+        // displayed list disagree with the summary after bot/probe rows are
+        // filtered out, especially on busy sites.
+        $fetchLimit = self::CURRENT_VISITORS_FETCH_LIMIT;
+        $classifierSql = '';
+        if(!empty($this->botFilterEnabled)) {
+            $classifierSql = " AND (visitor_hash IS NULL OR visitor_hash = '' OR visitor_hash NOT IN (
+                SELECT visitor_hash
+                FROM `" . self::HITS_TABLE . "`
+                WHERE is_bot = 1
+                  AND visitor_hash <> ''
+                  AND created_at >= DATE_SUB(NOW(), INTERVAL 1 DAY)
+            ))";
+        }
+
         $sql = "SELECT page_id, page_title, template, current_path, current_url, referrer_host, device_type, browser, os, visitor_hash,
                        first_seen_at, last_seen_at, hit_count, status_code
                 FROM `" . self::SESSIONS_TABLE . "`
-                WHERE {$where['sql']}
+                WHERE {$where['sql']}{$classifierSql}
                 ORDER BY last_seen_at DESC
-                LIMIT " . $fetchLimit;
+                LIMIT " . (int) $fetchLimit;
         $stmt = $this->wire('database')->prepare($sql);
         $stmt->execute($where['params']);
         $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC) ?: [];
@@ -2981,10 +3051,8 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $seenHashes = [];
         foreach($rows as $row) {
             $row = $this->normalizeAnalyticsRowForDisplay($row, 'current_path');
-            // Hide bot sessions from the live "Current visitors" panel:
-            //   - 404 sessions whose IP is currently behaving like a scanner
-            //   - 404 sessions with unidentifiable browser/OS
-            //   - sessions whose path matches built-in probe patterns
+            // Hide bot/probe sessions from the live panel even when they were
+            // not yet marked by the persistent classifier.
             $isProbeSession = false;
             $statusCode = (int) ($row['status_code'] ?? 0);
             if($statusCode === 404) {
@@ -2994,12 +3062,8 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
                 if(($browser === '' || $browser === 'other') && ($os === '' || $os === 'other')) $isProbeSession = true;
             }
             if(!empty($row['current_path']) && $this->matchesBuiltInProbePattern($row['current_path'])) $isProbeSession = true;
-
             if($isProbeSession) continue;
 
-            // Collapse multiple sessions from the same visitor (e.g. mobile tab-rotation)
-            // into a single row: keep the most-recent session (first in ORDER BY last_seen_at DESC),
-            // accumulate hit_count from later rows for the same visitor.
             $hash = (string) ($row['visitor_hash'] ?? '');
             if($hash !== '' && isset($seenHashes[$hash])) {
                 $result[$seenHashes[$hash]]['hit_count'] = (int) $result[$seenHashes[$hash]]['hit_count'] + (int) $row['hit_count'];
@@ -3008,7 +3072,6 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
 
             $result[] = $row;
             if($hash !== '') $seenHashes[$hash] = count($result) - 1;
-
             if(count($result) >= (int) $limit) break;
         }
         return $result;
@@ -3122,6 +3185,51 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         return $rows;
     }
 
+
+    public function searchPagesWithData($term, $limit = 10) {
+        $term = trim((string) $term);
+        $limit = max(1, min(50, (int) $limit));
+        if($term === '') return [];
+        if(function_exists('mb_strlen')) {
+            if(mb_strlen($term) < 2) return [];
+        } elseif(strlen($term) < 2) {
+            return [];
+        }
+
+        $params = [];
+        // Page finder is used to populate the Page ID filter, so only return
+        // rows that point to a real ProcessWire page. Exclude known bots and
+        // 404s to avoid suggesting noisy probe URLs or classifier-flagged hits.
+        $whereParts = ["page_id > 0", "is_bot = 0", "status_code != 404"];
+        if(ctype_digit($term)) {
+            $whereParts[] = "page_id = :page_id";
+            $params[':page_id'] = (int) $term;
+        } else {
+            $like = '%' . pwna_escape_like_term($term) . '%';
+            $whereParts[] = "(page_title LIKE :like_title OR path LIKE :like_path)";
+            $params[':like_title'] = $like;
+            $params[':like_path'] = $like;
+        }
+
+        $sql = "SELECT page_id, MAX(page_title) AS page_title, MAX(template) AS template, MAX(path) AS path,
+                       COUNT(*) AS views, MAX(created_at) AS last_seen_at
+                FROM `" . self::HITS_TABLE . "`
+                WHERE " . implode(' AND ', $whereParts) . "
+                GROUP BY page_id
+                ORDER BY views DESC, last_seen_at DESC
+                LIMIT " . (int) $limit;
+        try {
+            $stmt = $this->wire('database')->prepare($sql);
+            $stmt->execute($params);
+            $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC) ?: [];
+            foreach($rows as &$row) $row = $this->normalizeAnalyticsRowForDisplay($row);
+            unset($row);
+            return $rows;
+        } catch(\Throwable $e) {
+            $this->wire('log')->save('native-analytics', 'Page search failed: ' . $e->getMessage());
+            return [];
+        }
+    }
 
     public function getTopLandingPages($days = 30, $limit = 10, array $filters = []) {
         $range = $this->getDateRangeForDays($days);
@@ -3821,6 +3929,85 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         return $series;
     }
 
+    public function getChartGeometry() {
+        $width = 920;
+        $height = 260;
+        $padX = 40;
+        $padY = 20;
+        $plotWidth = $width - ($padX * 2);
+        $plotHeight = $height - ($padY * 2) - 24;
+        return [
+            'width' => $width,
+            'height' => $height,
+            'padX' => $padX,
+            'padY' => $padY,
+            'plotWidth' => $plotWidth,
+            'plotHeight' => $plotHeight,
+        ];
+    }
+
+    public function getChartLatestSlots($rangeSpec, array $filters = []) {
+        $today = date('Y-m-d');
+        $slotDay = is_array($rangeSpec) ? (string) ($rangeSpec['end_date'] ?? $today) : $today;
+        if(!preg_match('/^\d{4}-\d{2}-\d{2}$/', $slotDay)) $slotDay = $today;
+        $oneDay = ['start_date' => $slotDay, 'end_date' => $slotDay];
+
+        $pickLast = function(array $series) {
+            $row = end($series);
+            return is_array($row) ? $row : null;
+        };
+        $toSlot = function($row, $key) {
+            if(!is_array($row)) return null;
+            return [
+                'key' => (string) $key,
+                'label' => (string) ($row['label'] ?? ''),
+                'time' => (string) ($row['time_label'] ?? ''),
+                'views' => (int) ($row['views'] ?? 0),
+                'uniques' => (int) ($row['uniques'] ?? 0),
+                'sessions' => (int) ($row['sessions'] ?? 0),
+            ];
+        };
+
+        $slots = [];
+
+        $dailyRow = $pickLast($this->getDailySeries($oneDay, $filters));
+        if($dailyRow) $slots['daily'] = $toSlot($dailyRow, (string) ($dailyRow['day'] ?? $slotDay));
+
+        $hourly = $this->getHourlySeries($slotDay, $filters);
+        $currentHour = ($slotDay === $today) ? (int) date('G') : 23;
+        if(isset($hourly[$currentHour])) {
+            $hourlySlot = $toSlot($hourly[$currentHour], (string) $currentHour);
+            if($hourlySlot) $slots['hourly'] = $hourlySlot;
+        }
+
+        $eventsRow = $pickLast($this->getEventDailySeries($oneDay, $filters));
+        if($eventsRow) $slots['events'] = $toSlot($eventsRow, (string) ($eventsRow['day'] ?? $slotDay));
+
+        $goalsRow = $pickLast($this->getGoalDailySeries($oneDay, $filters));
+        if($goalsRow) $slots['goals'] = $toSlot($goalsRow, (string) ($goalsRow['day'] ?? $slotDay));
+
+        return $slots;
+    }
+
+    public function getLiveChartHtml($rangeSpec, array $filters = [], array $chartIds = []) {
+        $allowed = ['daily', 'hourly', 'events', 'goals'];
+        $chartIds = $chartIds ? array_values(array_intersect($allowed, $chartIds)) : $allowed;
+        $html = [];
+        foreach($chartIds as $id) {
+            if($id === 'daily') {
+                $html[$id] = $this->renderLineChart($this->getDailySeries($rangeSpec, $filters), 'views', 'Traffic trend by day', [], 'daily');
+            } elseif($id === 'hourly') {
+                $endDay = is_array($rangeSpec) ? (string) ($rangeSpec['end_date'] ?? date('Y-m-d')) : date('Y-m-d');
+                $html[$id] = $this->renderLineChart($this->getHourlySeries($endDay, $filters), 'views', 'Traffic by hour for selected day', [], 'hourly');
+            } elseif($id === 'events') {
+                $html[$id] = $this->renderLineChart($this->getEventDailySeries($rangeSpec, $filters), 'views', 'Tracked actions by day', ['views' => 'Events', 'uniques' => 'Uniques', 'sessions' => 'Sessions'], 'events');
+            } elseif($id === 'goals') {
+                $html[$id] = $this->renderLineChart($this->getGoalDailySeries($rangeSpec, $filters), 'views', 'Goal conversions by day', ['views' => 'Conversions', 'uniques' => 'Uniques', 'sessions' => 'Sessions'], 'goals');
+            }
+        }
+        return $html;
+    }
+
     public function getHealthSnapshot() {
         $db = $this->wire('database');
         $snapshot = [
@@ -4022,17 +4209,18 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         return $html;
     }
 
-    public function renderLineChart(array $series, $metric = 'views', $chartLabel = 'Analytics chart', array $metricLabels = []) {
+    public function renderLineChart(array $series, $metric = 'views', $chartLabel = 'Analytics chart', array $metricLabels = [], $liveId = '') {
         $metric = in_array($metric, ['views', 'uniques', 'sessions'], true) ? $metric : 'views';
         $metricLabels = array_merge(['views' => 'Views', 'uniques' => 'Uniques', 'sessions' => 'Sessions'], $metricLabels);
         if(!$series) return '<p>No data yet.</p>';
 
-        $width = 920;
-        $height = 260;
-        $padX = 40;
-        $padY = 20;
-        $plotWidth = $width - ($padX * 2);
-        $plotHeight = $height - ($padY * 2) - 24;
+        $geometry = $this->getChartGeometry();
+        $width = $geometry['width'];
+        $height = $geometry['height'];
+        $padX = $geometry['padX'];
+        $padY = $geometry['padY'];
+        $plotWidth = $geometry['plotWidth'];
+        $plotHeight = $geometry['plotHeight'];
         $max = 1;
         foreach($series as $row) $max = max($max, (int) ($row[$metric] ?? 0));
 
@@ -4050,34 +4238,35 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
 
             $label = (string) ($row['label'] ?? (isset($row['day']) ? $this->formatDisplayDate($row['day']) : ''));
             $timeLabel = (string) ($row['time_label'] ?? (isset($row['hour']) ? sprintf('%02d:00–%02d:59', (int) $row['hour'], (int) $row['hour']) : ''));
-            $circles[] = '<circle class="pwna-point" cx="' . $x . '" cy="' . $y . '" r="4" data-label="' . $sanitizer->entities($label) . '" data-time="' . $sanitizer->entities($timeLabel) . '" data-views="' . (int) ($row['views'] ?? 0) . '" data-uniques="' . (int) ($row['uniques'] ?? 0) . '" data-sessions="' . (int) ($row['sessions'] ?? 0) . '"></circle>';
+            $key = isset($row['hour']) ? (string) $row['hour'] : (string) ($row['day'] ?? $index);
+            $circles[] = '<circle class="pwna-point" cx="' . $x . '" cy="' . $y . '" r="4" data-key="' . $sanitizer->entities($key) . '" data-label="' . $sanitizer->entities($label) . '" data-time="' . $sanitizer->entities($timeLabel) . '" data-views="' . (int) ($row['views'] ?? 0) . '" data-uniques="' . (int) ($row['uniques'] ?? 0) . '" data-sessions="' . (int) ($row['sessions'] ?? 0) . '"></circle>';
         }
 
         $first = reset($series);
         $last = end($series);
         $firstLabel = isset($first['hour']) ? '00:00' : $this->formatDisplayDate($first['day']);
         $lastLabel = isset($last['hour']) ? '23:00' : $this->formatDisplayDate($last['day']);
+        $liveAttr = $liveId !== '' ? ' data-pwna-chart-live="' . $sanitizer->entities($liveId) . '"' : '';
 
-        $html  = '<div class="pwna-chart-wrap">';
+        $html  = '<div class="pwna-chart-wrap"' . $liveAttr . '>';
         $html .= '<svg class="pwna-chart" viewBox="0 0 ' . $width . ' ' . $height . '" role="img" aria-label="' . $sanitizer->entities($chartLabel) . '">';
         $html .= '<line x1="' . $padX . '" y1="' . ($padY + $plotHeight) . '" x2="' . ($padX + $plotWidth) . '" y2="' . ($padY + $plotHeight) . '" class="pwna-axis" />';
         $html .= '<line x1="' . $padX . '" y1="' . $padY . '" x2="' . $padX . '" y2="' . ($padY + $plotHeight) . '" class="pwna-axis" />';
         for($i = 0; $i <= 4; $i++) {
             $v = (int) round(($max / 4) * $i);
             $y = $padY + $plotHeight - (($v / $max) * $plotHeight);
-            $html .= '<line x1="' . $padX . '" y1="' . round($y, 2) . '" x2="' . ($padX + $plotWidth) . '" y2="' . round($y, 2) . '" class="pwna-grid" />';
-            $html .= '<text x="8" y="' . (round($y, 2) + 4) . '" class="pwna-label">' . $v . '</text>';
+            $html .= '<line x1="' . $padX . '" y1="' . round($y, 2) . '" x2="' . ($padX + $plotWidth) . '" y2="' . round($y, 2) . '" class="pwna-grid" data-pwna-grid="' . $i . '" />';
+            $html .= '<text x="8" y="' . (round($y, 2) + 4) . '" class="pwna-label" data-pwna-grid-label="' . $i . '">' . $v . '</text>';
         }
         $html .= '<polyline fill="none" class="pwna-line" points="' . implode(' ', $points) . '" />';
         $html .= implode('', $circles);
         $html .= '<text x="' . $padX . '" y="' . ($height - 6) . '" class="pwna-label">' . $sanitizer->entities($firstLabel) . '</text>';
         $html .= '<text x="' . ($padX + $plotWidth) . '" y="' . ($height - 6) . '" class="pwna-label" text-anchor="end">' . $sanitizer->entities($lastLabel) . '</text>';
         $html .= '</svg>';
-        $html .= '<div class="pwna-chart-tooltip" hidden><div class="pwna-chart-tooltip-day"></div><div class="pwna-chart-tooltip-time" hidden></div><div class="pwna-chart-tooltip-grid"><span>' . $sanitizer->entities($metricLabels['views']) . '</span><strong data-pwna-tip="views">0</strong><span>' . $sanitizer->entities($metricLabels['uniques']) . '</span><strong data-pwna-tip="uniques">0</strong><span>' . $sanitizer->entities($metricLabels['sessions']) . '</span><strong data-pwna-tip="sessions">0</strong></div><div class="pwna-chart-tooltip-compare" hidden><div class="pwna-chart-tooltip-day" data-pwna-tip="compare-day"></div><div class="pwna-chart-tooltip-grid"><span>Views</span><strong data-pwna-tip="compare-views">0</strong><span>Uniques</span><strong data-pwna-tip="compare-uniques">0</strong><span>Sessions</span><strong data-pwna-tip="compare-sessions">0</strong></div></div></div>';
+        $html .= '<div class="pwna-chart-tooltip" hidden><div class="pwna-chart-tooltip-day"></div><div class="pwna-chart-tooltip-time" hidden></div><div class="pwna-chart-tooltip-grid"><span>' . $sanitizer->entities($metricLabels['views']) . '</span><strong data-pwna-tip="views">0</strong><span>' . $sanitizer->entities($metricLabels['uniques']) . '</span><strong data-pwna-tip="uniques">0</strong><span>' . $sanitizer->entities($metricLabels['sessions']) . '</span><strong data-pwna-tip="sessions">0</strong></div><div class="pwna-chart-tooltip-compare" hidden><div class="pwna-chart-tooltip-day" data-pwna-tip="compare-day"></div><div class="pwna-chart-tooltip-grid"><span>' . $sanitizer->entities($metricLabels['views']) . '</span><strong data-pwna-tip="compare-views">0</strong><span>' . $sanitizer->entities($metricLabels['uniques']) . '</span><strong data-pwna-tip="compare-uniques">0</strong><span>' . $sanitizer->entities($metricLabels['sessions']) . '</span><strong data-pwna-tip="compare-sessions">0</strong></div></div></div>';
         $html .= '</div>';
         return $html;
     }
-
 
 
     protected function maybeHandleMonthlyReportToolRequest() {

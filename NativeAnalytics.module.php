@@ -1872,6 +1872,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             'privacyWireAutoConsent' => (bool) $this->privacyWireAutoConsent,
             'privacyWireStorageKey' => (string) $this->privacyWireStorageKey,
             'privacyWireGroups' => $this->getPrivacyWireGroups(),
+            'privacyWireVersion' => $this->getPrivacyWireConsentVersion(),
             'consentCookieMaxAge' => max(3600, (int) $this->privacyWireConsentCookieMaxAge),
         ];
 
@@ -3674,6 +3675,17 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             if($group !== '') $groups[] = $group;
         }
         return $groups ?: ['statistics'];
+    }
+
+    /**
+     * Consent version configured in the PrivacyWire module, or 0 when PrivacyWire
+     * is not installed / has no version — 0 disables the tracker's stale-consent check.
+     */
+    protected function getPrivacyWireConsentVersion() {
+        $modules = $this->wire('modules');
+        if(!$modules->isInstalled('PrivacyWire')) return 0;
+        $data = $modules->getModuleConfigData('PrivacyWire');
+        return isset($data['version']) ? (int) $data['version'] : 0;
     }
 
     public function getRequestPathForStorage() {

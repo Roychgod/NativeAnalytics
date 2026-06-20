@@ -1282,6 +1282,17 @@
 #pwna-engagement-tabs > ul.WireTabs,
 #pwna-wiretabs > ul.WireTabs { list-style: none; padding-left: 0; }
 
+/* FOUC guard: jQuery UI Tabs paints the first tab (Overview) on init, then
+   renderWireTabsScript switches to the URL-requested tab in $(document).ready.
+   Hide the panels (not the nav) until that switch lands, so a deep-linked or
+   storage-restored tab never flashes Overview first. The script removes
+   .pwna-tabs-booting once the requested tab is active — with a 1.5s safety
+   timeout and a no-jQuery fallback — so the panels can never stay hidden.
+   Panel class differs by admin theme: AdminThemeUikit uses .pw-wiretabs-item,
+   the classic WireTabs controller uses .WireTab — hide both. */
+#pwna-wiretabs.pwna-tabs-booting .pw-wiretabs-item,
+#pwna-wiretabs.pwna-tabs-booting .WireTab { visibility: hidden !important; }
+
 /* ============================================================
    Deterministic WireTabs styling — overrides every admin theme
    (Default, Reno, AdminThemeUikit, etc.) so tabs always look
@@ -1383,6 +1394,22 @@
   outline: none !important;
   position: relative !important;
   z-index: 2 !important;
+}
+
+/* While booting, no tab should look active until the reveal lands on the right
+   one. The controller marks Overview (its default) active first, so without this
+   its active underline shows before the switch. The active underline is the PW
+   admin rule `.uk-tab > .uk-active > a { border-bottom: 6px solid main-color }`,
+   so neutralise exactly that — keep the 6px geometry, make the colour transparent
+   (no layout shift). Descendant combinators (not `>`): the controller nests the
+   ul inside #pw-wiretabs-1, so the ul is a grandchild of #pwna-wiretabs. */
+#pwna-wiretabs.pwna-tabs-booting ul.WireTabs li.ui-tabs-active > a,
+#pwna-wiretabs.pwna-tabs-booting ul.WireTabs li.ui-state-active > a,
+#pwna-wiretabs.pwna-tabs-booting ul.WireTabs li.uk-active > a,
+#pwna-wiretabs.pwna-tabs-booting ul.WireTabs li.on > a,
+#pwna-wiretabs.pwna-tabs-booting ul.WireTabs li > a.uk-active,
+#pwna-wiretabs.pwna-tabs-booting ul.WireTabs li > a[aria-selected="true"] {
+  border-bottom-color: transparent !important;
 }
 
 /* Fallback pill-style tab nav (used when JqueryWireTabs is unavailable) */

@@ -338,13 +338,15 @@ public function ___execute() {
         foreach($tabContent as $key => $content) {
             $wireTabItems[$tabLabels[$key] ?? ucfirst((string) $key)] = $content;
         }
-        $out .= '<div id="pwna-wiretabs" class="pwna-wiretabs">';
+        $out .= '<div id="pwna-wiretabs" class="pwna-wiretabs pwna-tabs-booting">';
         $out .= $wireTabs->render($wireTabItems);
         $out .= '</div>';
     } else {
+        // Wrap in #pwna-wiretabs so the existing WireTabs nav styling applies; only
+        // the active tab's panel is rendered, so there's no second panel to flash.
+        $out .= '<div id="pwna-wiretabs" class="pwna-wiretabs">';
         $out .= $this->renderTabNav($activeTab, $rangeMeta, $pageId, $template, $compareMeta['selected']);
-        $out .= '<div class="pwna-tab-panels">';
-        $out .= '<section class="pwna-tab-panel">' . $activeContent . '</section>';
+        $out .= '<div class="pwna-tab-panels"><section class="pwna-tab-panel">' . $activeContent . '</section></div>';
         $out .= '</div>';
     }
 
@@ -1087,7 +1089,12 @@ protected function renderWireTabsScript($activeTab, $engagementView) {
     $script = <<<'HTML'
 <script__PWNA_NONCE__>
 (function($){
-  if(!$) return;
+  function revealTabs(){
+    var el = document.getElementById('pwna-wiretabs');
+    if(el && el.classList) el.classList.remove('pwna-tabs-booting');
+  }
+  // No jQuery means no WireTabs widget at all — never leave the panels hidden.
+  if(!$){ revealTabs(); return; }
   function getStore(){
     try { return window.sessionStorage; } catch(e) { return null; }
   }
@@ -1160,6 +1167,44 @@ protected function renderWireTabsScript($activeTab, $engagementView) {
       setTimeout(tryActivate, 300);
     }
   }
+  // Map a tab slug to its panel element id via the nav anchor's href (#panelId).
+  // Works for AdminThemeUikit's pw-wiretabs and jQuery UI alike — both link the
+  // nav anchor to its panel by hash.
+  function panelIdForSlug(cfg, slug) {
+    var $links = getNavAnchors('#pwna-wiretabs', cfg);
+    var $link = $links.filter(function(){
+      return slugFromLabel(cfg, $(this).text()) === slug;
+    }).first();
+    if(!$link.length) return '';
+    var href = String($link.attr('href') || '');
+    return href.charAt(0) === '#' ? href.slice(1) : '';
+  }
+  // Unhide only once the requested tab's panel is the displayed one. The boot
+  // class hides panels via visibility (not display), so an inactive panel reads
+  // display:none and the active one display:block — that's the controller's real
+  // switch signal, regardless of how/when it fires. Polls briefly, then a hard
+  // backstop guarantees the panels can never stay hidden.
+  function revealWhenActive(cfg, slug, attempts) {
+    var id = panelIdForSlug(cfg, slug);
+    var panel = id ? document.getElementById(id) : null;
+    // Reveal only once the controller has settled into single-tab mode AND the
+    // requested tab is the one showing. Checking just "requested panel visible"
+    // fires too early: before pw-wiretabs initializes, ALL panels are stacked
+    // (display:block), so that test passes instantly and the boot class drops
+    // while every tab is still on screen — the flash. Requiring exactly one
+    // visible panel, and it being the requested one, waits for the real switch.
+    var panels = document.querySelectorAll('#pwna-wiretabs .pw-wiretabs-item, #pwna-wiretabs .WireTab');
+    var visible = 0, requestedVisible = false, i;
+    for(i = 0; i < panels.length; i++) {
+      if(getComputedStyle(panels[i]).display !== 'none') {
+        visible++;
+        if(panels[i] === panel) requestedVisible = true;
+      }
+    }
+    if(panel && requestedVisible && visible === 1) { revealTabs(); return; }
+    if(attempts <= 0) { revealTabs(); return; }
+    setTimeout(function(){ revealWhenActive(cfg, slug, attempts - 1); }, 30);
+  }
   function writeTabState(cfg, slug) {
     var label = (cfg.labels && cfg.labels[slug]) ? cfg.labels[slug] : 'Overview';
     writeStored(cfg.storageKey, label);
@@ -1179,6 +1224,13 @@ protected function renderWireTabsScript($activeTab, $engagementView) {
 
     activateBySlug('#pwna-wiretabs', cfg, preferredSlug);
 
+    // Unhide only once the requested tab's panel is actually visible — never
+    // while Overview is still active. The pw-wiretabs controller switches
+    // asynchronously after activateBySlug's click, so revealing on the click
+    // itself flashed Overview; polling the panel's display avoids that race.
+    // 50 * 40ms ≈ 2s backstop so panels can never stay hidden.
+    revealWhenActive(cfg, preferredSlug, 50);
+
     // Gate URL writes until after the initial WireTabs widget-creation fires.
     // jQuery UI fires tabsactivate once during init for the default tab — we
     // must not write that to the URL before activateBySlug switches to the
@@ -1197,6 +1249,8 @@ protected function renderWireTabsScript($activeTab, $engagementView) {
         if(slug === preferredSlug) {
           initialTabActivated = true;
           clearTimeout(initTimer);
+          // Requested tab is now the active panel — safe to unhide (no flash).
+          revealTabs();
         }
         return;
       }
@@ -1306,17 +1360,21 @@ protected function getCompareMeta(NativeAnalytics $analytics, array $rangeMeta) 
 
 protected function renderTabNav($activeTab, array $rangeMeta, $pageId, $template, $selectedCompare) {
     $tabs = $this->getTabLabels();
-    $out = '<nav class="pwna-tabs">';
+    // Emit the WireTabs ul/li/a structure so the existing #pwna-wiretabs >
+    // ul.WireTabs styling applies verbatim — the server-side nav then looks
+    // identical to the old JS-tab nav, with no new CSS. The active <li> carries
+    // uk-active, which the existing active-tab rules already target.
+    $out = '<ul class="WireTabs">';
     foreach($tabs as $key => $label) {
         $params = ['tab' => $key, 'range' => $rangeMeta['selectedRange'], 'from_date' => $rangeMeta['fromDate'], 'to_date' => $rangeMeta['toDate']];
         if($pageId > 0) $params['page_id'] = (int) $pageId;
         if($template !== '') $params['template'] = $template;
         if($key === 'compare') $params['compare'] = $selectedCompare;
         if($key === 'engagement') $params['engage_view'] = $this->getEngagementView();
-        $class = $activeTab === $key ? ' class="is-active"' : '';
-        $out .= '<a' . $class . ' href="?' . http_build_query($params) . '">' . $this->sanitizer->entities($label) . '</a>';
+        $liClass = $activeTab === $key ? ' class="uk-active"' : '';
+        $out .= '<li' . $liClass . '><a href="?' . http_build_query($params) . '">' . $this->sanitizer->entities($label) . '</a></li>';
     }
-    $out .= '</nav>';
+    $out .= '</ul>';
     return $out;
 }
 

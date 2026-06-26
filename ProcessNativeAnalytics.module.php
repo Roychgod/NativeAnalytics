@@ -6,7 +6,7 @@ class ProcessNativeAnalytics extends Process {
         return [
             'title' => 'NativeAnalytics Dashboard',
             'summary' => 'Dashboard for the NativeAnalytics module.',
-            'version' => 1029,
+            'version' => 1030,
             'author' => 'Pyxios - Roych (www.pyxios.com)',
             'permission' => 'nativeanalytics-view',
             'icon' => 'area-chart',
@@ -338,13 +338,13 @@ public function ___execute() {
         foreach($tabContent as $key => $content) {
             $wireTabItems[$tabLabels[$key] ?? ucfirst((string) $key)] = $content;
         }
-        $out .= '<div id="pwna-wiretabs" class="pwna-wiretabs">';
+        $out .= '<div id="pwna-wiretabs" class="pwna-wiretabs pwna-tabs-booting">';
         $out .= $wireTabs->render($wireTabItems);
         $out .= '</div>';
     } else {
+        $out .= '<div id="pwna-wiretabs" class="pwna-wiretabs">';
         $out .= $this->renderTabNav($activeTab, $rangeMeta, $pageId, $template, $compareMeta['selected']);
-        $out .= '<div class="pwna-tab-panels">';
-        $out .= '<section class="pwna-tab-panel">' . $activeContent . '</section>';
+        $out .= '<div class="pwna-tab-panels"><section class="pwna-tab-panel">' . $activeContent . '</section></div>';
         $out .= '</div>';
     }
 
@@ -1087,7 +1087,11 @@ protected function renderWireTabsScript($activeTab, $engagementView) {
     $script = <<<'HTML'
 <script__PWNA_NONCE__>
 (function($){
-  if(!$) return;
+  function revealTabs(){
+    var el = document.getElementById('pwna-wiretabs');
+    if(el && el.classList) el.classList.remove('pwna-tabs-booting');
+  }
+  if(!$){ revealTabs(); return; }
   function getStore(){
     try { return window.sessionStorage; } catch(e) { return null; }
   }
@@ -1160,6 +1164,30 @@ protected function renderWireTabsScript($activeTab, $engagementView) {
       setTimeout(tryActivate, 300);
     }
   }
+  function panelIdForSlug(cfg, slug) {
+    var $links = getNavAnchors('#pwna-wiretabs', cfg);
+    var $link = $links.filter(function(){
+      return slugFromLabel(cfg, $(this).text()) === slug;
+    }).first();
+    if(!$link.length) return '';
+    var href = String($link.attr('href') || '');
+    return href.charAt(0) === '#' ? href.slice(1) : '';
+  }
+  function revealWhenActive(cfg, slug, attempts) {
+    var id = panelIdForSlug(cfg, slug);
+    var panel = id ? document.getElementById(id) : null;
+    var panels = document.querySelectorAll('#pwna-wiretabs .pw-wiretabs-item, #pwna-wiretabs .WireTab');
+    var visible = 0, requestedVisible = false, i;
+    for(i = 0; i < panels.length; i++) {
+      if(getComputedStyle(panels[i]).display !== 'none') {
+        visible++;
+        if(panels[i] === panel) requestedVisible = true;
+      }
+    }
+    if(panel && requestedVisible && visible === 1) { revealTabs(); return; }
+    if(attempts <= 0) { revealTabs(); return; }
+    setTimeout(function(){ revealWhenActive(cfg, slug, attempts - 1); }, 30);
+  }
   function writeTabState(cfg, slug) {
     var label = (cfg.labels && cfg.labels[slug]) ? cfg.labels[slug] : 'Overview';
     writeStored(cfg.storageKey, label);
@@ -1178,6 +1206,7 @@ protected function renderWireTabsScript($activeTab, $engagementView) {
     if(!preferredSlug) preferredSlug = cfg.initialSlug || 'overview';
 
     activateBySlug('#pwna-wiretabs', cfg, preferredSlug);
+    revealWhenActive(cfg, preferredSlug, 50);
 
     // Gate URL writes until after the initial WireTabs widget-creation fires.
     // jQuery UI fires tabsactivate once during init for the default tab — we
@@ -1197,6 +1226,7 @@ protected function renderWireTabsScript($activeTab, $engagementView) {
         if(slug === preferredSlug) {
           initialTabActivated = true;
           clearTimeout(initTimer);
+          revealTabs();
         }
         return;
       }
@@ -1306,17 +1336,17 @@ protected function getCompareMeta(NativeAnalytics $analytics, array $rangeMeta) 
 
 protected function renderTabNav($activeTab, array $rangeMeta, $pageId, $template, $selectedCompare) {
     $tabs = $this->getTabLabels();
-    $out = '<nav class="pwna-tabs">';
+    $out = '<ul class="WireTabs">';
     foreach($tabs as $key => $label) {
         $params = ['tab' => $key, 'range' => $rangeMeta['selectedRange'], 'from_date' => $rangeMeta['fromDate'], 'to_date' => $rangeMeta['toDate']];
         if($pageId > 0) $params['page_id'] = (int) $pageId;
         if($template !== '') $params['template'] = $template;
         if($key === 'compare') $params['compare'] = $selectedCompare;
         if($key === 'engagement') $params['engage_view'] = $this->getEngagementView();
-        $class = $activeTab === $key ? ' class="is-active"' : '';
-        $out .= '<a' . $class . ' href="?' . http_build_query($params) . '">' . $this->sanitizer->entities($label) . '</a>';
+        $liClass = $activeTab === $key ? ' class="uk-active"' : '';
+        $out .= '<li' . $liClass . '><a href="?' . http_build_query($params) . '">' . $this->sanitizer->entities($label) . '</a></li>';
     }
-    $out .= '</nav>';
+    $out .= '</ul>';
     return $out;
 }
 

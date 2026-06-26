@@ -169,6 +169,8 @@
     if (!raw) return null;
     var consent;
     try { consent = JSON.parse(raw); } catch (e) { return null; }
+    var requiredVersion = parseInt(cfg.privacyWireVersion, 10) || 0;
+    if (requiredVersion > 0 && parseInt(consent && consent.version, 10) !== requiredVersion) return false;
     var groups = cfg.privacyWireGroups || ['statistics'];
     var cookieGroups = consent && consent.cookieGroups ? consent.cookieGroups : {};
     for (var i = 0; i < groups.length; i++) {
@@ -287,6 +289,9 @@
     window.PWNA.syncPrivacyWireConsent();
     window.addEventListener('storage', function (e) {
       if (!e || e.key === (cfg.privacyWireStorageKey || 'privacywire')) window.PWNA.syncPrivacyWireConsent();
+    });
+    document.addEventListener('PrivacyWireBannerAndOptionsClosed', function () {
+      window.PWNA.syncPrivacyWireConsent();
     });
   } else {
     window.PWNA.trackIfConsented();

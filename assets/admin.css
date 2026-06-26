@@ -1282,6 +1282,9 @@
 #pwna-engagement-tabs > ul.WireTabs,
 #pwna-wiretabs > ul.WireTabs { list-style: none; padding-left: 0; }
 
+#pwna-wiretabs.pwna-tabs-booting .pw-wiretabs-item,
+#pwna-wiretabs.pwna-tabs-booting .WireTab { visibility: hidden !important; }
+
 /* ============================================================
    Deterministic WireTabs styling — overrides every admin theme
    (Default, Reno, AdminThemeUikit, etc.) so tabs always look
@@ -1383,6 +1386,15 @@
   outline: none !important;
   position: relative !important;
   z-index: 2 !important;
+}
+
+#pwna-wiretabs.pwna-tabs-booting ul.WireTabs li.ui-tabs-active > a,
+#pwna-wiretabs.pwna-tabs-booting ul.WireTabs li.ui-state-active > a,
+#pwna-wiretabs.pwna-tabs-booting ul.WireTabs li.uk-active > a,
+#pwna-wiretabs.pwna-tabs-booting ul.WireTabs li.on > a,
+#pwna-wiretabs.pwna-tabs-booting ul.WireTabs li > a.uk-active,
+#pwna-wiretabs.pwna-tabs-booting ul.WireTabs li > a[aria-selected="true"] {
+  border-bottom-color: transparent !important;
 }
 
 /* Fallback pill-style tab nav (used when JqueryWireTabs is unavailable) */

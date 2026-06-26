@@ -4,7 +4,7 @@ require_once __DIR__ . '/lib/like-escape.php';
 
 class NativeAnalytics extends WireData implements Module, ConfigurableModule {
 
-    const VERSION = '1.0.29';
+    const VERSION = '1.0.30';
     const HITS_TABLE = 'pwna_hits';
     const DAILY_TABLE = 'pwna_daily';
     const SESSIONS_TABLE = 'pwna_sessions';
@@ -61,7 +61,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         return [
             'title' => 'NativeAnalytics',
             'summary' => 'Native first-party analytics dashboard for ProcessWire with traffic, compare, exports, event tracking and goals.',
-            'version' => 1029,
+            'version' => 1030,
             'author' => 'Pyxios - Roych (www.pyxios.com)',
             'href' => 'https://processwire.com/talk/topic/31808-native-analytics-%E2%80%94-a-native-analytics-module-for-processwire/',
             'repo' => 'https://github.com/Roychgod/NativeAnalytics',
@@ -1872,6 +1872,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             'privacyWireAutoConsent' => (bool) $this->privacyWireAutoConsent,
             'privacyWireStorageKey' => (string) $this->privacyWireStorageKey,
             'privacyWireGroups' => $this->getPrivacyWireGroups(),
+            'privacyWireVersion' => $this->getPrivacyWireConsentVersion(),
             'consentCookieMaxAge' => max(3600, (int) $this->privacyWireConsentCookieMaxAge),
         ];
 
@@ -3676,6 +3677,17 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         return $groups ?: ['statistics'];
     }
 
+    /**
+     * Consent version configured in the PrivacyWire module, or 0 when PrivacyWire
+     * is not installed / has no version. Version 0 disables stale-consent checks.
+     */
+    protected function getPrivacyWireConsentVersion() {
+        $modules = $this->wire('modules');
+        if(!$modules->isInstalled('PrivacyWire')) return 0;
+        $data = $modules->getModuleConfigData('PrivacyWire');
+        return isset($data['version']) ? (int) $data['version'] : 0;
+    }
+
     public function getRequestPathForStorage() {
         $page = $this->wire('page');
         if($page && $page->id && !$this->is404Page($page)) {
@@ -4061,6 +4073,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
     }
 
     public function addPageAnalyticsBox(HookEvent $event) {
+        if(!$this->shouldRenderPageEditAnalyticsBox()) return;
         if(!$this->wire('user')->hasPermission('nativeanalytics-view')) return;
         $form = $event->return;
         if(!is_object($form) || !method_exists($form, 'add')) return;
@@ -4091,6 +4104,20 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $field->collapsed = Inputfield::collapsedNo;
         $field->value = $this->renderMiniStatsBox($summary7, $summary30, $current, $editedPage);
         $form->add($field);
+    }
+
+    /**
+     * ProcessWire also uses ProcessPageEdit for field/file/image scoped dialogs,
+     * for example image edit modals. Those forms are intentionally limited to one
+     * field or file, so the full-page analytics widget must not be injected there.
+     */
+    protected function shouldRenderPageEditAnalyticsBox() {
+        $input = $this->wire('input');
+        foreach(['field', 'fields', 'field_id', 'file', 'filename', 'InputfieldFileAjax', 'InputfieldImageAjax'] as $key) {
+            $value = $input->get($key);
+            if($value !== null && $value !== '') return false;
+        }
+        return true;
     }
 
     /**

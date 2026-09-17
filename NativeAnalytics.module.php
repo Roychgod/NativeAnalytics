@@ -2659,7 +2659,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         }
     }
 
-    protected function getCanonicalPagePath(Page $page = null) {
+    protected function getCanonicalPagePath(?Page $page = null) {
         if(!$page || !$page->id) return '/';
         return $this->normalizePath((string) $page->path());
     }

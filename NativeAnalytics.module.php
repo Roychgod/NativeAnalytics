@@ -6567,12 +6567,19 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             }
 
             $available = class_exists('DeviceDetector\\DeviceDetector');
+            if($available) require_once __DIR__ . '/lib/DeviceDetectorFileCache.php';
         }
 
         if(!$available) return $cache[$ua] = null;
 
+        static $ddCache = null;
+        if($ddCache === null) {
+            $ddCache = new NativeAnalyticsDeviceDetectorCache($this->wire('config')->paths->cache . 'NativeAnalytics/device-detector/');
+        }
+
         try {
             $dd = new \DeviceDetector\DeviceDetector($ua);
+            $dd->setCache($ddCache);
             if(method_exists($dd, 'skipBotDetection')) {
                 $dd->skipBotDetection(false);
             }

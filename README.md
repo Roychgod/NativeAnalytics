@@ -1,10 +1,10 @@
-NativeAnalytics 1.0.33
+NativeAnalytics 1.0.34
 
 # NativeAnalytics
 
 Native first-party analytics module for ProcessWire CMS. It tracks traffic and engagement directly inside ProcessWire, without Google Analytics or external APIs.
 
-## Features in v1.0.33
+## Features in v1.0.34
 
 NativeAnalytics is a first-party analytics dashboard for ProcessWire. It keeps the tracking data inside your ProcessWire installation and does not rely on Google Analytics, external tracking scripts or remote analytics APIs.
 
@@ -252,6 +252,27 @@ Thanks to **[adrianbj](https://github.com/adrianbj)** for all five improvements 
 
 - **Fixed the tracking endpoint being recorded as a pageview.** On some setups (ProcessWire installed in a subdirectory, behind a reverse proxy, or where the `/pwna-track/` request was not recognised as the analytics endpoint) the endpoint's own path could leak into stored hits. The result was that **Top pages**, **Top landing pages** and **Top exit pages** all showed only `/pwna-track/`, with sessions started equal to sessions ended. A new `isEndpointPath()` guard now hard-excludes `/pwna-track/` and `/pwna-realtime/` from being stored as a pageview or event, and the `getRequestPathForStorage()` fallback can no longer return an endpoint path. Existing `/pwna-track/` rows can be cleaned up via the suspicious-path removal tool.
 - Updated module version metadata to `1.0.27` / integer `1027`.
+
+## 1.0.34 notes
+
+Integrates three pull requests from adrianbj (#20, #21, #22), with additional hardening.
+
+### Performance — persistent device-detector cache (PR #22)
+- matomo/device-detector's parsed regex lists are now cached as PHP files under `site/assets/cache/NativeAnalytics/device-detector/`, so OPcache keeps them in shared memory. This removes a ~370 ms YAML parse from every tracking beacon.
+- Writes are atomic (temp file + rename); corrupt entries are discarded and regenerated; an unwritable or full disk degrades silently to the previous per-request cache instead of logging warnings on every hit.
+- The cache is only enabled when the loaded device-detector exposes the typed 5.0+ `CacheInterface`, so sites supplying an older library via Composer cannot hit a fatal class-declaration error.
+- Stale cache files are removed on module upgrade and uninstall (cache only — analytics data is untouched).
+
+### API — explicit bot flagging (PR #20)
+- New `$modules->get('NativeAnalytics')->markSessionAsBot($rawSessionId, $reason = 'honeypot')` lets a caller holding a zero-false-positive signal (filled honeypot, failed challenge) flag a session that behavioural rules can never reach (multi-hit form spam).
+- New `markSessionHashAsBot($sessionHash, $reason)` for callers that only have the stored hash (backfills, drill-downs).
+- Flags hits, events and attribution; idempotent; nothing is deleted. `$reason` must be a short `[a-z0-9_]` tag, otherwise `honeypot` is used. Returns the number of rows actually flagged, including on partial failure.
+- Daily, event and goal aggregates for affected days older than yesterday are rebuilt immediately, so retroactive flagging is reflected in reports (recent days stay with the hourly cron, avoiding rebuild amplification from repeat submissions).
+
+### PHP 8.4/8.5 compatibility (PR #21)
+- `getCanonicalPagePath(?Page $page = null)` declares its nullable parameter explicitly, removing the implicit-nullable deprecation notice.
+
+- Updated NativeAnalytics and dashboard version metadata consistently to `1.0.34` / integer `1034`.
 
 ## 1.0.33 notes
 

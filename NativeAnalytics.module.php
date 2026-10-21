@@ -4,7 +4,7 @@ require_once __DIR__ . '/lib/like-escape.php';
 
 class NativeAnalytics extends WireData implements Module, ConfigurableModule {
 
-    const VERSION = '1.0.33';
+    const VERSION = '1.0.34';
     const HITS_TABLE = 'pwna_hits';
     const DAILY_TABLE = 'pwna_daily';
     const SESSIONS_TABLE = 'pwna_sessions';
@@ -286,6 +286,10 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
     public function ___upgrade($fromVersion, $toVersion) {
         $this->ensureSchema(true);
 
+        // device-detector cache keys carry the library version, so files from an older
+        // bundled copy are never read again. Drop them on module upgrade; regenerable.
+        if((int) $fromVersion !== (int) $toVersion) $this->clearDeviceDetectorCache();
+
         if((int) $fromVersion < 1024) {
             try {
                 $modules = $this->wire('modules');
@@ -325,6 +329,8 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             } else {
                 $this->wire('log')->save('native-analytics', 'Module uninstalled; analytics tables were preserved for a future reinstall.');
             }
+            // Regenerable cache only — never user data.
+            $this->clearDeviceDetectorCache();
             $this->deletePermission('nativeanalytics-view');
             $this->deletePermission('nativeanalytics-manage');
             $this->cleanupDashboardAdminPage();
@@ -2659,7 +2665,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         }
     }
 
-    protected function getCanonicalPagePath(Page $page = null) {
+    protected function getCanonicalPagePath(?Page $page = null) {
         if(!$page || !$page->id) return '/';
         return $this->normalizePath((string) $page->path());
     }
@@ -3211,10 +3217,126 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             $stmt->execute([':since' => $since]);
             $result['events_propagated'] = (int) $stmt->rowCount();
         } catch(\Throwable $e) {
-            $this->log('markBehavioralBots failed: ' . $e->getMessage());
+            $this->wire('log')->save('native-analytics', 'markBehavioralBots failed: ' . $e->getMessage());
         }
 
         return $result;
+    }
+
+    /**
+     * Flag one session as a bot from a caller that KNOWS it is one.
+     *
+     * markBehavioralBots() infers bots from traffic shape, and every one of its
+     * rules requires a single-hit session (or a lone 404). That puts an entire
+     * category permanently out of reach: anything that loads a form, submits it
+     * and gets the page back produces two or more hits, so no amount of
+     * threshold tuning will ever reach it. Form spam is exactly that shape.
+     *
+     * A caller holding a zero-false-positive signal — a filled honeypot, a
+     * failed challenge — can say so outright instead. Pass the RAW session id
+     * (the value the JS tracker keeps in window.PWNA.sessionId); this hashes it
+     * the same way tracking does, so callers never handle a hash themselves.
+     *
+     * Nothing is deleted: this only sets the flag reports already filter on, so
+     * the traffic stays in the tables and stays visible with include_bots (and
+     * in NativeAnalyticsBehavior via its "Exclude NativeAnalytics bot sessions"
+     * setting). Flagging is retroactive across the session's whole history.
+     *
+     * Idempotent — only rows not already flagged are touched, so calling it
+     * again for the same session (a bot resubmitting) picks up hits recorded
+     * since the last call. Hits arriving *after* the final call stay unflagged;
+     * NAB's session-level filter still excludes them because it matches any
+     * session with at least one flagged hit, but NA's own row-level reports
+     * will count them.
+     *
+     * @param string $sessionId Raw (unhashed) session id.
+     * @param string $reason Short tag for bot_reason, e.g. 'honeypot'.
+     * @return int Rows flagged across hits, events and attribution.
+     */
+    public function markSessionAsBot($sessionId, $reason = 'honeypot') {
+        $sessionId = trim((string) $sessionId);
+        if($sessionId === '') return 0;
+        return $this->markSessionHashAsBot($this->hashValue($sessionId), $reason);
+    }
+
+    /**
+     * markSessionAsBot() for a caller that only has the session HASH.
+     *
+     * Raw session ids are short-lived — they live in the visitor's
+     * sessionStorage and are never stored — so anything working over history
+     * (a backfill, a report drilling down from a flagged row) has only the
+     * hash. Same guarantees as markSessionAsBot(): nothing is deleted, only
+     * unflagged rows are touched, and it is safe to run repeatedly.
+     *
+     * @param string $sessionHash 64-char sha256 session hash.
+     * @param string $reason Short tag for bot_reason.
+     * @return int Rows flagged across hits, events and attribution.
+     */
+    public function markSessionHashAsBot($sessionHash, $reason = 'honeypot') {
+        $hash = trim((string) $sessionHash);
+        if(!preg_match('/^[a-f0-9]{64}$/i', $hash)) return 0;
+        // bot_reason is a short tag reports GROUP BY, alongside the classifier's
+        // own 'ua_fleet'/'ip_excessive'. Reject anything not already tag-shaped
+        // rather than stripping it down: quietly turning "Honey Pot!! <script>"
+        // into "honeypotscript" would pollute the grouping with junk values.
+        $reason = strtolower(trim((string) $reason));
+        if(!preg_match('/^[a-z0-9_]{1,64}$/', $reason)) $reason = 'honeypot';
+
+        $flagged = 0;
+        $db = $this->wire('database');
+
+        // Days whose aggregates will go stale once these rows are flagged. Today and
+        // yesterday are rebuilt by the hourly cron; anything older (a backfill over
+        // history) must be rebuilt here or reports keep counting the bot traffic.
+        $staleDays = [];
+        $cronDays = [date('Y-m-d'), date('Y-m-d', strtotime('-1 day'))];
+        try {
+            foreach([self::HITS_TABLE, self::EVENTS_TABLE] as $table) {
+                $stmt = $db->prepare("SELECT DISTINCT `created_date` FROM `{$table}`
+                    WHERE `session_hash` = :hash AND `is_bot` = 0");
+                $stmt->execute([':hash' => $hash]);
+                foreach($stmt->fetchAll(\PDO::FETCH_COLUMN) ?: [] as $day) {
+                    $day = (string) $day;
+                    if($day !== '' && !in_array($day, $cronDays, true)) $staleDays[$day] = true;
+                }
+            }
+        } catch(\Throwable $e) {
+            // non-fatal: flagging still proceeds, the cron covers recent days
+        }
+
+        try {
+            foreach([self::HITS_TABLE, self::EVENTS_TABLE] as $table) {
+                $stmt = $db->prepare("UPDATE `{$table}` SET `is_bot` = 1, `bot_reason` = :reason
+                    WHERE `session_hash` = :hash AND `is_bot` = 0");
+                $stmt->execute([':reason' => $reason, ':hash' => $hash]);
+                $flagged += (int) $stmt->rowCount();
+            }
+            // The attribution row carries is_bot too, but has no bot_reason column.
+            $stmt = $db->prepare("UPDATE `" . self::ATTRIBUTION_TABLE . "` SET `is_bot` = 1
+                WHERE `session_hash` = :hash AND `is_bot` = 0");
+            $stmt->execute([':hash' => $hash]);
+            $flagged += (int) $stmt->rowCount();
+        } catch(\Throwable $e) {
+            // Report what actually landed, not 0: the updates run table by
+            // table, so a failure on a later one leaves the earlier ones
+            // committed. Returning 0 there would tell the caller nothing
+            // happened while rows were in fact flagged.
+            $this->wire('log')->save('native-analytics', 'markSessionHashAsBot failed after ' . $flagged . ' rows: ' . $e->getMessage());
+        }
+
+        if($flagged > 0 && $staleDays) {
+            foreach(array_keys($staleDays) as $day) {
+                if(!preg_match('/^\d{4}-\d{2}-\d{2}$/', $day) || $day === '0000-00-00') continue;
+                try {
+                    $this->rebuildDailyAggregate($day);
+                    $this->rebuildEventDailyAggregate($day);
+                    $this->rebuildGoalDailyAggregate($day);
+                } catch(\Throwable $e) {
+                    $this->wire('log')->save('native-analytics', 'Aggregate rebuild after markSessionHashAsBot failed for ' . $day . ': ' . $e->getMessage());
+                }
+            }
+        }
+        return $flagged;
     }
 
     public function rebuildDailyAggregate($day) {
@@ -6573,12 +6695,65 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
 
         try {
             $dd = new \DeviceDetector\DeviceDetector($ua);
+            $ddCache = $this->getDeviceDetectorCache();
+            if($ddCache && method_exists($dd, 'setCache')) $dd->setCache($ddCache);
             if(method_exists($dd, 'skipBotDetection')) {
                 $dd->skipBotDetection(false);
             }
             return $cache[$ua] = $dd;
         } catch(\Throwable $e) {
             return $cache[$ua] = null;
+        }
+    }
+
+    /**
+     * Directory for device-detector's persistent regex cache.
+     */
+    protected function getDeviceDetectorCacheDir() {
+        return $this->wire('config')->paths->cache . 'NativeAnalytics/device-detector/';
+    }
+
+    /**
+     * Persistent file cache for device-detector's parsed regexes (see lib/DeviceDetectorFileCache.php).
+     *
+     * Returns null (DeviceDetector keeps its per-request StaticCache) when the loaded library
+     * is older than 5.0: its CacheInterface is untyped, and declaring our typed implementation
+     * against it would be a fatal compile error. A site may supply such a version via Composer,
+     * so the interface is checked via reflection BEFORE the class file is loaded.
+     *
+     * @return \DeviceDetector\Cache\CacheInterface|null
+     */
+    protected function getDeviceDetectorCache() {
+        static $cache = false;
+        if($cache !== false) return $cache;
+        $cache = null;
+        try {
+            if(!interface_exists('DeviceDetector\\Cache\\CacheInterface')) return $cache;
+            $method = new \ReflectionMethod('DeviceDetector\\Cache\\CacheInterface', 'contains');
+            if(!$method->hasReturnType()) return $cache;
+            $file = __DIR__ . '/lib/DeviceDetectorFileCache.php';
+            if(!is_file($file)) return $cache;
+            require_once $file;
+            $cache = new NativeAnalyticsDeviceDetectorCache($this->getDeviceDetectorCacheDir());
+        } catch(\Throwable $e) {
+            $cache = null;
+        }
+        return $cache;
+    }
+
+    /**
+     * Remove device-detector's persistent cache files (stale versions, uninstall, manual reset).
+     *
+     * @return bool
+     */
+    public function clearDeviceDetectorCache() {
+        $dir = $this->getDeviceDetectorCacheDir();
+        if(!is_dir($dir)) return true;
+        try {
+            return (bool) $this->wire('files')->rmdir($dir, true);
+        } catch(\Throwable $e) {
+            $this->wire('log')->save('native-analytics', 'Clearing device-detector cache failed: ' . $e->getMessage());
+            return false;
         }
     }
 

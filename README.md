@@ -1,10 +1,10 @@
-NativeAnalytics 1.0.34
+NativeAnalytics 1.0.35
 
 # NativeAnalytics
 
 Native first-party analytics module for ProcessWire CMS. It tracks traffic and engagement directly inside ProcessWire, without Google Analytics or external APIs.
 
-## Features in v1.0.34
+## Features in v1.0.35
 
 NativeAnalytics is a first-party analytics dashboard for ProcessWire. It keeps the tracking data inside your ProcessWire installation and does not rely on Google Analytics, external tracking scripts or remote analytics APIs.
 
@@ -252,6 +252,18 @@ Thanks to **[adrianbj](https://github.com/adrianbj)** for all five improvements 
 
 - **Fixed the tracking endpoint being recorded as a pageview.** On some setups (ProcessWire installed in a subdirectory, behind a reverse proxy, or where the `/pwna-track/` request was not recognised as the analytics endpoint) the endpoint's own path could leak into stored hits. The result was that **Top pages**, **Top landing pages** and **Top exit pages** all showed only `/pwna-track/`, with sessions started equal to sessions ended. A new `isEndpointPath()` guard now hard-excludes `/pwna-track/` and `/pwna-realtime/` from being stored as a pageview or event, and the `getRequestPathForStorage()` fallback can no longer return an endpoint path. Existing `/pwna-track/` rows can be cleaned up via the suspicious-path removal tool.
 - Updated module version metadata to `1.0.27` / integer `1027`.
+
+## 1.0.35 notes
+
+### Bot filtering — skip automated beacons in the browser (PR #23)
+- `tracker.js` no longer sends any beacon (pageview, time on page, events) when `navigator.webdriver` is true (Selenium, Playwright, Puppeteer) or the user agent carries an explicit automation marker (HeadlessChrome, Googlebot, HubSpot Crawler, Baiduspider-render, GPTBot, ClaudeBot, Lighthouse …). Each skipped beacon saves a full ProcessWire boot; on a measured install this was ~33 % of all `/pwna-track/` requests.
+- The client pattern is deliberately narrow so real browsers are never skipped (CUBOT phones, Facebook/Pinterest/Instagram in-app browsers, legacy `compatible; MSIE` UAs). The server keeps its full check for everything else.
+
+### Fixed real visitors being rejected as bots on the server
+- `isBotUserAgent()` ran the broad regex fallback even when device-detector had positively identified a real browser. Visitors on CUBOT phones (matched `bot\b`) and in Pinterest/Tumblr in-app browsers were silently discarded. When device-detector recognises a browser or in-app browser on a known OS, only the narrow automation pattern (`AUTOMATED_UA_PATTERN`, shared with `tracker.js`) is now applied. Without device-detector, behaviour is unchanged.
+- The Chrome Privacy Preserving Prefetch Proxy pattern now matches its real user agent (with spaces).
+
+- Updated NativeAnalytics and dashboard version metadata consistently to `1.0.35` / integer `1035`.
 
 ## 1.0.34 notes
 

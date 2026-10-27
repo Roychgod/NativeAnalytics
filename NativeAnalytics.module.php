@@ -4,7 +4,16 @@ require_once __DIR__ . '/lib/like-escape.php';
 
 class NativeAnalytics extends WireData implements Module, ConfigurableModule {
 
-    const VERSION = '1.0.34';
+    const VERSION = '1.0.35';
+
+    /**
+     * Markers that no person's browser carries. Used by the client tracker
+     * (assets/tracker.js, keep in sync) and on the server for user agents that
+     * device-detector identified as a real browser/app on a real OS, where the
+     * broad regex fallback would cause false positives (e.g. "CUBOT" phones
+     * matching bot\b, Pinterest in-app browser matching "pinterest").
+     */
+    const AUTOMATED_UA_PATTERN = '/bot\\/|bot\\.html|compatible;[^)]*bot|crawl|spider|slurp|headless|phantomjs|selenium|puppeteer|playwright|lighthouse|pagespeed|chrome[\\s-]privacy[\\s-]preserving[\\s-]prefetch|google-|mediapartners|facebookexternalhit|gptbot|claudebot|perplexitybot|bytespider|amazonbot|applebot/i';
     const HITS_TABLE = 'pwna_hits';
     const DAILY_TABLE = 'pwna_daily';
     const SESSIONS_TABLE = 'pwna_sessions';
@@ -71,7 +80,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         return [
             'title' => 'NativeAnalytics',
             'summary' => 'Native first-party analytics dashboard for ProcessWire with traffic, acquisition channels, funnels, compare, exports, event tracking and goals.',
-            'version' => 1034,
+            'version' => 1035,
             'author' => 'Pyxios - Roych (www.pyxios.com)',
             'href' => 'https://processwire.com/talk/topic/31808-native-analytics-%E2%80%94-a-native-analytics-module-for-processwire/',
             'repo' => 'https://github.com/Roychgod/NativeAnalytics',
@@ -6610,6 +6619,16 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
                 if($clientType === 'library' || $clientType === 'feed reader') {
                     return $cache[$ua] = true;
                 }
+                // device-detector positively identified a real browser or in-app browser
+                // on a real OS with a browser-style UA: trust it and only check for explicit
+                // automation markers (link previewers such as "WhatsApp/2.x" fail the Mozilla/ test).
+                // The broad regex below would otherwise drop real visitors (CUBOT phones
+                // via bot\b, Pinterest/Tumblr in-app browsers via social previewer names).
+                $osName = method_exists($detector, 'getOs') ? (string) $detector->getOs('name') : '';
+                if(($clientType === 'browser' || $clientType === 'mobile app') && $osName !== '' && $osName !== 'UNK'
+                    && stripos($ua, 'Mozilla/') === 0) {
+                    return $cache[$ua] = (bool) preg_match(self::AUTOMATED_UA_PATTERN, $ua);
+                }
             } catch(\Throwable $e) {
                 // fall through to regex
             }
@@ -6637,7 +6656,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             // Security scanners / misc / probes
             . '|masscan|nmap|nikto|zgrab|netcraft|qwantify|mojeekbot|duckduckgo-favicons-bot|wpscan|sqlmap|acunetix|nessus|qualys|burp\s?suite|w3af|netsparker'
             // Headless / automated-browser signatures sometimes used as full UA
-            . '|headlesschrome|chrome-headless|jsdom|axe-core|google\s?page\s?speed|lighthouse|pagespeed|search\s?console|chrome-privacy-preserving-prefetch'
+            . '|headlesschrome|chrome-headless|jsdom|axe-core|google\s?page\s?speed|lighthouse|pagespeed|search\s?console|chrome[\s-]privacy[\s-]preserving[\s-]prefetch'
             . '/i';
 
         return $cache[$ua] = (bool) preg_match($pattern, $ua);

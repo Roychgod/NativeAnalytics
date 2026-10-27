@@ -68,8 +68,15 @@
     if (!cfg.respectDnt) return false;
     return navigator.doNotTrack === '1' || window.doNotTrack === '1';
   }
+  // Crawlers and headless browsers that run scripts would send every beacon only for the
+  // server to reject it by user agent, after a full request. Only names that no person's
+  // browser carries are listed here; the server keeps its full check for the rest.
+  // Keep in sync with NativeAnalytics::AUTOMATED_UA_PATTERN.
+  var AUTOMATED_UA = /bot\/|bot\.html|compatible;[^)]*bot|crawl|spider|slurp|headless|phantomjs|selenium|puppeteer|playwright|lighthouse|pagespeed|chrome[\s-]privacy[\s-]preserving[\s-]prefetch|google-|mediapartners|facebookexternalhit|gptbot|claudebot|perplexitybot|bytespider|amazonbot|applebot/i;
+  var automated = false;
+  try { automated = navigator.webdriver === true || AUTOMATED_UA.test(navigator.userAgent || ''); } catch (e) {}
   function canTrack() {
-    return !!cfg.trackEndpoint && hasConsent() && !isDntActive();
+    return !automated && !!cfg.trackEndpoint && hasConsent() && !isDntActive();
   }
   function getQueryVars() {
     var out = {};

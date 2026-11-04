@@ -2828,7 +2828,12 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $pageId = max(0, (int) ($payload['pageId'] ?? 0));
         $pageTitle = $this->cleanTextValue((string) ($payload['pageTitle'] ?? ''), 255);
         $template = trim((string) ($payload['template'] ?? ''));
-        if($endpointRequest) [$pageId, $template] = $this->verifyPayloadPage($pageId, $template);
+        if($endpointRequest) {
+            [$pageId, $template, $pageTitle, $isOn404Page] = $this->verifyPayloadPage($pageId, $template, $pageTitle, $path);
+            // The 404 page is only ever shown with a 404 status, and real 404
+            // beacons have already been through the 404 bot filtering above.
+            if($isOn404Page && $statusCode !== 404) $this->sendTrackingResponse(204);
+        }
         if($statusCode === 404) {
             $template = '404';
             $pageId = 0;
@@ -2900,24 +2905,97 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
     }
 
     /**
-     * Beacons sent to /pwna-track/ carry the page ID and template from the
-     * browser. Both are checked against the real page so a forged beacon
-     * cannot attribute hits to admin pages, non-existent IDs or invented
-     * template names. The (language-specific) title stays as sent.
+     * Beacons sent to /pwna-track/ carry the page ID, template, title and path
+     * from the browser. They are checked against the real page so a forged
+     * beacon cannot attribute hits to admin pages, non-existent IDs or invented
+     * template names, and cannot pin a made-up path or title on a real page:
      *
-     * @return array [int $pageId, string $template]
+     *  - the page must be published and outside the admin tree, which rules
+     *    out users, roles, permissions, repeater items and other system pages
+     *    a visitor never renders;
+     *  - the path must be the page's own path (in any language), optionally
+     *    followed by URL segments or a page number. The 404 page is exempt,
+     *    since it is shown at whatever URL was requested;
+     *  - the title must be one of the page's own titles (in any language),
+     *    otherwise the page's current title is used.
+     *
+     * A beacon that fails the page or path check is kept but loses its page
+     * attribution (ID 0, no template), the same as a beacon without a page ID.
+     *
+     * @return array [int $pageId, string $template, string $pageTitle, bool $is404Page]
      */
-    protected function verifyPayloadPage($pageId, $template) {
+    protected function verifyPayloadPage($pageId, $template, $pageTitle, $path) {
         $pageId = (int) $pageId;
         $template = (string) $this->wire('sanitizer')->name((string) $template);
-        if($pageId < 1) return [0, $template === '404' ? '404' : ''];
+        if($pageId < 1) return [0, $template === '404' ? '404' : '', $pageTitle, false];
         try {
             $p = $this->wire('pages')->get('id=' . $pageId . ', include=all');
         } catch(\Throwable $e) {
             $p = null;
         }
-        if(!$p || !$p->id || !$p->template || $p->template->name === 'admin' || $p->isTrash()) return [0, ''];
-        return [(int) $p->id, (string) $p->template->name];
+        if(!$p || !$p->id || !$p->template || $p->template->name === 'admin' || $p->isTrash()) return [0, '', $pageTitle, false];
+        // Users, roles, permissions and repeater items all live under the admin
+        // tree. (A full $p->viewable() check would also cover access-restricted
+        // branches, but costs ~3 ms per beacon in role lookups.)
+        if($p->isUnpublished() || (int) $p->rootParent()->id === (int) $this->wire('config')->adminRootPageID) return [0, '', $pageTitle, false];
+
+        $is404Page = $this->is404Page($p);
+        if(!$is404Page && !$this->pathBelongsToPage((string) $path, $p)) return [0, '', $pageTitle, false];
+
+        $ownTitle = $this->cleanTextValue((string) $p->get('title'), 255);
+        if((string) $pageTitle !== $ownTitle && !$this->isTitleInAnyLanguage($p, (string) $pageTitle)) {
+            $pageTitle = $ownTitle;
+        }
+
+        return [(int) $p->id, (string) $p->template->name, $pageTitle, $is404Page];
+    }
+
+    /**
+     * True when $path is the page's path in any language, or that path followed
+     * by URL segments / a page number. $path is a storage path (site root
+     * already removed); a query string or fragment is ignored.
+     */
+    protected function pathBelongsToPage($path, Page $page) {
+        $path = (string) preg_replace('/[?#].*$/', '', (string) $path);
+        if($path === '') return false;
+        $requested = array_unique([$path, rawurldecode($path)]);
+
+        $own = [(string) $page->path()];
+        if($this->wire('modules')->isInstalled('LanguageSupportPageNames') && $this->wire('languages')) {
+            foreach($this->wire('languages') as $language) {
+                try {
+                    $own[] = (string) $page->localPath($language);
+                } catch(\Throwable $e) {
+                    // ignore: fall back to the default path
+                }
+            }
+        }
+
+        foreach(array_unique($own) as $ownPath) {
+            $base = rtrim($ownPath, '/');
+            foreach($requested as $candidate) {
+                if($base === '' || rtrim($candidate, '/') === $base || strpos($candidate, $base . '/') === 0) return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * True when $title is the page's title in one of the site's languages.
+     * Only reached when the title doesn't match the current language's; sites
+     * without multi-language fields return straight away.
+     */
+    protected function isTitleInAnyLanguage(Page $page, $title) {
+        $languages = $this->wire('languages');
+        if($title === '' || !$languages || !$this->wire('modules')->isInstalled('LanguageSupportFields')) return false;
+        foreach($languages as $language) {
+            try {
+                if($this->cleanTextValue((string) $page->getLanguageValue($language, 'title'), 255) === $title) return true;
+            } catch(\Throwable $e) {
+                return false; // title is not a multi-language field
+            }
+        }
+        return false;
     }
 
     protected function handleTimeOnPageRequest(array $payload) {
@@ -2980,7 +3058,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $pageId = max(0, (int) ($payload['pageId'] ?? 0));
         $pageTitle = $this->cleanTextValue((string) ($payload['pageTitle'] ?? ''), 255);
         $template = trim((string) ($payload['template'] ?? ''));
-        if($endpointRequest) [$pageId, $template] = $this->verifyPayloadPage($pageId, $template);
+        if($endpointRequest) [$pageId, $template, $pageTitle] = $this->verifyPayloadPage($pageId, $template, $pageTitle, $path);
         if(!$endpointRequest && $page && $page->id && $page->template && $page->template->name !== 'admin') {
             if($pageId < 1) $pageId = (int) $page->id;
             if($pageTitle === '') $pageTitle = $this->cleanTextValue((string) $page->get('title'), 255);

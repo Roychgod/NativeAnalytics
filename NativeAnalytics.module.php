@@ -4,7 +4,7 @@ require_once __DIR__ . '/lib/like-escape.php';
 
 class NativeAnalytics extends WireData implements Module, ConfigurableModule {
 
-    const VERSION = '1.0.35';
+    const VERSION = '1.0.36';
 
     /**
      * Markers that no person's browser carries. Used by the client tracker
@@ -80,7 +80,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         return [
             'title' => 'NativeAnalytics',
             'summary' => 'Native first-party analytics dashboard for ProcessWire with traffic, acquisition channels, funnels, compare, exports, event tracking and goals.',
-            'version' => 1035,
+            'version' => 1036,
             'author' => 'Pyxios - Roych (www.pyxios.com)',
             'href' => 'https://processwire.com/talk/topic/31808-native-analytics-%E2%80%94-a-native-analytics-module-for-processwire/',
             'repo' => 'https://github.com/Roychgod/NativeAnalytics',
@@ -146,6 +146,18 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $m = (string) ($this->trackingMode ?? 'js_first');
         if(!in_array($m, ['js_first', 'js_only', 'both', 'server_only'], true)) $m = 'js_first';
         return $m;
+    }
+
+    /**
+     * True when the request carries a browser opt-out signal and the
+     * "Respect Do Not Track / Global Privacy Control" setting is on.
+     * Sec-GPC is the current standard; DNT is kept for older browsers.
+     */
+    public function isOptOutSignalRequest() {
+        if(empty($this->respectDnt)) return false;
+        if(isset($_SERVER['HTTP_SEC_GPC']) && trim((string) $_SERVER['HTTP_SEC_GPC']) === '1') return true;
+        if(isset($_SERVER['HTTP_DNT']) && trim((string) $_SERVER['HTTP_DNT']) === '1') return true;
+        return false;
     }
 
     protected function applyDefaults() {
@@ -1186,10 +1198,11 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
 
         $f = $wire->modules->get('InputfieldCheckbox');
         $f->name = 'respectDnt';
-        $f->label = 'Respect Do Not Track';
+        $f->label = 'Respect Do Not Track / Global Privacy Control';
         $f->checked = !empty($data['respectDnt']);
         $f->showIf = 'trackingEnabled=1';
-        $f->description = 'If a visitor sends the browser Do Not Track signal, analytics tracking will be skipped.';
+        $f->description = 'If a visitor sends a browser opt-out signal – Global Privacy Control (Sec-GPC) or the legacy Do Not Track header – analytics tracking is skipped.';
+        $f->notes = 'GPC is the current standard (Brave, Firefox, DuckDuckGo, privacy extensions) and is legally binding in several jurisdictions. Do Not Track has been removed from Firefox and is deprecated.';
         $wrapper->add($f);
 
         $f = $wire->modules->get('InputfieldCheckbox');
@@ -2309,7 +2322,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
 
         $ua = isset($_SERVER['HTTP_USER_AGENT']) ? trim((string) $_SERVER['HTTP_USER_AGENT']) : '';
         if($this->isBotUserAgent($ua)) return;
-        if($this->respectDnt && isset($_SERVER['HTTP_DNT']) && (string) $_SERVER['HTTP_DNT'] === '1') return;
+        if($this->isOptOutSignalRequest()) return;
         if($this->isSuspiciousProbePath()) return;
         if($this->isIpBlocked()) return;
 
@@ -2775,7 +2788,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $ua = isset($_SERVER['HTTP_USER_AGENT']) ? trim((string) $_SERVER['HTTP_USER_AGENT']) : '';
         if($this->isBotUserAgent($ua)) $this->sendTrackingResponse(204);
         if($this->isIpBlocked()) $this->sendTrackingResponse(204);
-        if($this->respectDnt && isset($_SERVER['HTTP_DNT']) && (string) $_SERVER['HTTP_DNT'] === '1') $this->sendTrackingResponse(204);
+        if($this->isOptOutSignalRequest()) $this->sendTrackingResponse(204);
         if($this->isSuspiciousProbePath($payload['path'] ?? null)) $this->sendTrackingResponse(204);
         if($this->requireConsent && !$this->hasConsentCookie()) $this->sendTrackingResponse(204);
 
@@ -2815,6 +2828,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $pageId = max(0, (int) ($payload['pageId'] ?? 0));
         $pageTitle = $this->cleanTextValue((string) ($payload['pageTitle'] ?? ''), 255);
         $template = trim((string) ($payload['template'] ?? ''));
+        if($endpointRequest) [$pageId, $template] = $this->verifyPayloadPage($pageId, $template);
         if($statusCode === 404) {
             $template = '404';
             $pageId = 0;
@@ -2885,9 +2899,30 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $this->sendTrackingResponse(204);
     }
 
+    /**
+     * Beacons sent to /pwna-track/ carry the page ID and template from the
+     * browser. Both are checked against the real page so a forged beacon
+     * cannot attribute hits to admin pages, non-existent IDs or invented
+     * template names. The (language-specific) title stays as sent.
+     *
+     * @return array [int $pageId, string $template]
+     */
+    protected function verifyPayloadPage($pageId, $template) {
+        $pageId = (int) $pageId;
+        $template = (string) $this->wire('sanitizer')->name((string) $template);
+        if($pageId < 1) return [0, $template === '404' ? '404' : ''];
+        try {
+            $p = $this->wire('pages')->get('id=' . $pageId . ', include=all');
+        } catch(\Throwable $e) {
+            $p = null;
+        }
+        if(!$p || !$p->id || !$p->template || $p->template->name === 'admin' || $p->isTrash()) return [0, ''];
+        return [(int) $p->id, (string) $p->template->name];
+    }
+
     protected function handleTimeOnPageRequest(array $payload) {
         if(!$this->trackingEnabled) $this->sendTrackingResponse(204);
-        if($this->respectDnt && isset($_SERVER['HTTP_DNT']) && (string) $_SERVER['HTTP_DNT'] === '1') $this->sendTrackingResponse(204);
+        if($this->isOptOutSignalRequest()) $this->sendTrackingResponse(204);
         if($this->isIpBlocked()) $this->sendTrackingResponse(204);
         $ua = isset($_SERVER['HTTP_USER_AGENT']) ? trim((string) $_SERVER['HTTP_USER_AGENT']) : '';
         if($this->isBotUserAgent($ua)) $this->sendTrackingResponse(204);
@@ -2921,7 +2956,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $ua = isset($_SERVER['HTTP_USER_AGENT']) ? trim((string) $_SERVER['HTTP_USER_AGENT']) : '';
         if($this->isBotUserAgent($ua)) $this->sendTrackingResponse(204);
         if($this->isIpBlocked()) $this->sendTrackingResponse(204);
-        if($this->respectDnt && isset($_SERVER['HTTP_DNT']) && (string) $_SERVER['HTTP_DNT'] === '1') $this->sendTrackingResponse(204);
+        if($this->isOptOutSignalRequest()) $this->sendTrackingResponse(204);
         if($this->isSuspiciousProbePath($payload['path'] ?? null)) $this->sendTrackingResponse(204);
         if($this->requireConsent && !$this->hasConsentCookie()) $this->sendTrackingResponse(204);
 
@@ -2945,6 +2980,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $pageId = max(0, (int) ($payload['pageId'] ?? 0));
         $pageTitle = $this->cleanTextValue((string) ($payload['pageTitle'] ?? ''), 255);
         $template = trim((string) ($payload['template'] ?? ''));
+        if($endpointRequest) [$pageId, $template] = $this->verifyPayloadPage($pageId, $template);
         if(!$endpointRequest && $page && $page->id && $page->template && $page->template->name !== 'admin') {
             if($pageId < 1) $pageId = (int) $page->id;
             if($pageTitle === '') $pageTitle = $this->cleanTextValue((string) $page->get('title'), 255);
@@ -5021,7 +5057,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         if(($mode === 'js_first' || $mode === 'js_only') && !is_file(__DIR__ . '/assets/tracker.js')) $issues[] = 'Browser tracker asset is missing.';
         if((int) ($health['hits_count'] ?? 0) === 0 && !empty($this->trackingEnabled)) $warnings[] = 'No pageviews have been stored yet.';
         if($this->isRoleExcluded()) $warnings[] = 'Your current logged-in role is excluded from tracking; this is normal for administrators.';
-        if(!empty($this->respectDnt)) $warnings[] = 'Do Not Track requests are ignored by analytics as configured.';
+        if(!empty($this->respectDnt)) $warnings[] = 'Visitors sending Global Privacy Control / Do Not Track are not tracked, as configured.';
         if(!empty($this->requireConsent)) $warnings[] = 'Tracking waits for the configured consent cookie.';
 
         return [

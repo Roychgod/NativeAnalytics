@@ -6,7 +6,7 @@ class ProcessNativeAnalytics extends Process {
         return [
             'title' => 'NativeAnalytics Dashboard',
             'summary' => 'Dashboard for the NativeAnalytics module.',
-            'version' => 1035,
+            'version' => 1036,
             'author' => 'Pyxios - Roych (www.pyxios.com)',
             'permission' => 'nativeanalytics-view',
             'icon' => 'area-chart',
@@ -826,7 +826,7 @@ startxref
 
 protected function renderBrandHeader(NativeAnalytics $analytics) {
     $version = 'v' . NativeAnalytics::VERSION;
-    $donateUrl = 'https://www.paypal.com/donate/?business=BBZT3L4ES7U7A&no_recurring=0&item_name=Free+open-source+modules%2C+built+in+my+spare+time.+If+they+help+your+projects%2C+a+small+donation+keeps+development+going.+Thanx%21&currency_code=EUR';
+    $sponsorUrl = 'https://github.com/sponsors/Roychgod';
     $settingsUrl = $this->wire('config')->urls->admin . 'module/edit?name=NativeAnalytics';
     $canManageModules = $this->user->isSuperuser() || $this->user->hasPermission('module-admin');
     $out = '<section class="pwna-brand pwna-panel">';
@@ -834,7 +834,7 @@ protected function renderBrandHeader(NativeAnalytics $analytics) {
     $out .= '<i class="fa fa-bar-chart pwna-brand-icon" aria-hidden="true"></i>';
     $out .= '<span>NativeAnalytics</span>';
     $out .= '<span class="pwna-brand-version">' . $this->sanitizer->entities($version) . '</span>';
-    $out .= '<a class="pwna-donate-btn" href="' . $this->sanitizer->entities($donateUrl) . '" target="_blank" rel="noopener noreferrer">&#9829; Donate</a>';
+    $out .= '<a class="pwna-donate-btn pwna-sponsor-btn" href="' . $this->sanitizer->entities($sponsorUrl) . '" target="_blank" rel="noopener noreferrer" title="Support NativeAnalytics development on GitHub Sponsors"><span aria-hidden="true">&#9829;</span> Sponsor</a>';
     $out .= '</div>';
     if($canManageModules) {
         $out .= '<div class="pwna-brand-actions">';

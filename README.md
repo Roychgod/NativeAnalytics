@@ -1,10 +1,10 @@
-NativeAnalytics 1.0.35
+NativeAnalytics 1.0.36
 
 # NativeAnalytics
 
 Native first-party analytics module for ProcessWire CMS. It tracks traffic and engagement directly inside ProcessWire, without Google Analytics or external APIs.
 
-## Features in v1.0.35
+## Features in v1.0.36
 
 NativeAnalytics is a first-party analytics dashboard for ProcessWire. It keeps the tracking data inside your ProcessWire installation and does not rely on Google Analytics, external tracking scripts or remote analytics APIs.
 
@@ -34,6 +34,7 @@ Main features currently included:
 - CSV, PDF and DOCX exports
 - Optional monthly email reports with configurable recipients, report sections (including acquisition channels) and PDF attachment
 - Server-side pageview tracking with optional event JS tracking, bot filtering and optional consent cookie gate
+- Respects browser opt-out signals: Global Privacy Control (`Sec-GPC`) and legacy Do Not Track
 - Cookie-less visitor/session storage mode for EU/privacy-focused sites
 - PrivacyWire localStorage consent helper
 - Cleaner, grouped module settings with collapsible sections for tracking, filters, bot detection, privacy/consent, retention, reports and advanced options
@@ -252,6 +253,13 @@ Thanks to **[adrianbj](https://github.com/adrianbj)** for all five improvements 
 
 - **Fixed the tracking endpoint being recorded as a pageview.** On some setups (ProcessWire installed in a subdirectory, behind a reverse proxy, or where the `/pwna-track/` request was not recognised as the analytics endpoint) the endpoint's own path could leak into stored hits. The result was that **Top pages**, **Top landing pages** and **Top exit pages** all showed only `/pwna-track/`, with sessions started equal to sessions ended. A new `isEndpointPath()` guard now hard-excludes `/pwna-track/` and `/pwna-realtime/` from being stored as a pageview or event, and the `getRequestPathForStorage()` fallback can no longer return an endpoint path. Existing `/pwna-track/` rows can be cleaned up via the suspicious-path removal tool.
 - Updated module version metadata to `1.0.27` / integer `1027`.
+
+## 1.0.36 notes
+
+- **Global Privacy Control.** "Respect Do Not Track" now also honours GPC (`Sec-GPC: 1` header on the server, `navigator.globalPrivacyControl` in the tracker). GPC is the signal current browsers and privacy extensions send; Firefox has removed Do Not Track. Existing installs with the option on start respecting GPC automatically.
+- **Verified page data on tracking beacons.** For beacons sent to `/pwna-track/`, the page ID and template sent by the browser are checked against the real page: unknown IDs, trashed pages and admin pages are dropped, and the template always comes from ProcessWire. Forged beacons can no longer attribute hits to invented templates or admin pages.
+- Updated the bundled **matomo/device-detector 6.5.1 → 6.5.2** (new devices, browsers, bots, Android 16/17 client hints). The device-detector cache is versioned and cleared on upgrade.
+- The brand header button now links to **GitHub Sponsors** ("Sponsor") instead of PayPal.
 
 ## 1.0.35 notes
 

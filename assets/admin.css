@@ -1014,6 +1014,27 @@
   color: var(--pwna-danger-text-dark) !important;
   text-decoration: none !important;
 }
+
+/* GitHub Sponsors button: neutral surface + pink heart (GitHub style).
+   Hover changes colors only, never geometry. */
+.pwna-sponsor-btn,
+.pwna-sponsor-btn:visited {
+  background: var(--pwna-bg-muted);
+  border-color: var(--pwna-border-strong);
+  color: var(--pwna-text-mid) !important;
+}
+
+.pwna-sponsor-btn span {
+  color: #db61a2;
+  line-height: 1;
+}
+
+.pwna-sponsor-btn:hover,
+.pwna-sponsor-btn:focus {
+  background: var(--pwna-bg-tint) !important;
+  border-color: #db61a2 !important;
+  color: var(--pwna-text) !important;
+}
 @media (max-width: 1100px) {
   .pwna-gen-grid {
     grid-template-columns: 1fr;

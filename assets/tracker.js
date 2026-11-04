@@ -66,7 +66,8 @@
   }
   function isDntActive() {
     if (!cfg.respectDnt) return false;
-    return navigator.doNotTrack === '1' || window.doNotTrack === '1';
+    // Global Privacy Control (current standard) or legacy Do Not Track.
+    return navigator.globalPrivacyControl === true || navigator.doNotTrack === '1' || window.doNotTrack === '1';
   }
   // Crawlers and headless browsers that run scripts would send every beacon only for the
   // server to reject it by user agent, after a full request. Only names that no person's

@@ -307,6 +307,24 @@
 
   if (cfg.autoTrack) window.PWNA.trackPageview();
 
+  // Form honeypot: copy the tracker's session id into the hidden companion
+  // field, so a caught spam submission is attributed to its analytics session.
+  // Only an existing id is used; nothing is created before consent.
+  (function () {
+    function fill(root) {
+      var v = window.PWNA.sessionId || getSession('pwna_sid') || '';
+      if (!v || !(root || document).querySelectorAll) return;
+      var els = (root || document).querySelectorAll('input[data-pwna-hp-sid]');
+      for (var i = 0; i < els.length; i++) els[i].value = v;
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', function () { fill(); });
+    } else {
+      fill();
+    }
+    document.addEventListener('submit', function (e) { fill(e.target); }, true);
+  }());
+
   // Time-on-page: measure active time using Page Visibility API.
   // We track "active" seconds only (tab must be visible). On tab hide or
   // page unload we send a lightweight beacon so the server can update the hit.

@@ -4,7 +4,7 @@ require_once __DIR__ . '/lib/like-escape.php';
 
 class NativeAnalytics extends WireData implements Module, ConfigurableModule {
 
-    const VERSION = '1.0.36';
+    const VERSION = '1.0.37';
 
     /**
      * Markers that no person's browser carries. Used by the client tracker
@@ -74,13 +74,19 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         'botIpMaxHitsPerHour' => 30,
         'bot404ShowBots' => 0,
         'deleteDataOnUninstall' => 0,
+        'clientIpSource' => 'auto',
+        'trustedProxies' => '',
+        'honeypotEnabled' => 0,
+        'honeypotAction' => 'flag',
+        'honeypotFieldName' => '',
+        'honeypotSkipForms' => '',
     ];
 
     public static function getModuleInfo() {
         return [
             'title' => 'NativeAnalytics',
             'summary' => 'Native first-party analytics dashboard for ProcessWire with traffic, acquisition channels, funnels, compare, exports, event tracking and goals.',
-            'version' => 1036,
+            'version' => 1037,
             'author' => 'Pyxios - Roych (www.pyxios.com)',
             'href' => 'https://processwire.com/talk/topic/31808-native-analytics-%E2%80%94-a-native-analytics-module-for-processwire/',
             'repo' => 'https://github.com/Roychgod/NativeAnalytics',
@@ -95,7 +101,18 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $this->applyDefaults();
         $this->ensureSchema();
 
-        $this->maybeHandleSpecialEndpoints();
+        // Request handling is attached to later boot points so that developer
+        // hooks (NativeAnalytics::shouldTrack, ::beforeSaveHit, ...) added in
+        // site/init.php or site/ready.php are in place when they are needed:
+        //  - tracking beacons are answered as the page view starts, i.e. after
+        //    site/init.php but before page lookup, redirect modules, other
+        //    modules' ready() and site/ready.php, which keeps each beacon cheap;
+        //  - front-end page requests are handled once the $page is ready,
+        //    after site/ready.php and before the page renders.
+        // ProcessWire collects a method's hooks before running it, so both
+        // must be registered here rather than from ready().
+        $this->addHookBefore('ProcessPageView::execute', $this, 'hookSpecialEndpoints');
+        $this->addHookAfter('ProcessPageView::ready', $this, 'hookFrontendReady');
 
         $this->addHookAfter('LazyCron::everyDay', $this, 'handleDailyCron');
         $this->addHookAfter('LazyCron::everyHour', $this, 'handleHourlyCron');
@@ -104,25 +121,52 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
     public function ready() {
         $this->applyDefaults();
 
-        if($this->wire('config')->admin) {
-            $this->maybeHandleMonthlyReportToolRequest();
-            $this->maybeHandleMaintenanceToolRequest();
+        if(!$this->wire('config')->admin) return; // front end: see hookFrontendReady()
+
+        $this->maybeHandleMonthlyReportToolRequest();
+        $this->maybeHandleMaintenanceToolRequest();
+
+        if($this->trackingEnabled && !empty($this->showPageEditAnalytics)) {
+            $this->addHookAfter('ProcessPageEdit::buildForm', $this, 'addPageAnalyticsBox');
+        }
+    }
+
+    /**
+     * Hook before ProcessPageView::execute: answer /pwna-track/ and
+     * /pwna-realtime/ beacons (they exit). Every other request continues untouched.
+     */
+    public function hookSpecialEndpoints(HookEvent $event) {
+        $this->applyDefaults();
+        $this->maybeHandleSpecialEndpoints();
+    }
+
+    /**
+     * Hook after ProcessPageView::ready: front-end request handling, once per
+     * request. Runs after site/ready.php and before the page is rendered.
+     */
+    public function hookFrontendReady(HookEvent $event) {
+        static $done = false;
+        if($done) return;
+        $done = true;
+
+        $this->applyDefaults();
+        if($this->wire('config')->admin) return;
+
+        if(!empty($this->honeypotEnabled)) {
+            // Form spam honeypot runs independently of tracking: check incoming
+            // POSTs before the template (FormBuilder, LoginRegister, custom
+            // forms) processes them, then add the field to rendered forms.
+            $this->checkHoneypotSubmission();
+            $this->addHookAfter('Page::render', $this, 'injectHoneypot');
         }
 
         if(!$this->trackingEnabled) return;
 
-        if($this->wire('config')->admin) {
-            if(!empty($this->showPageEditAnalytics)) {
-                $this->addHookAfter('ProcessPageEdit::buildForm', $this, 'addPageAnalyticsBox');
-            }
-            return;
-        }
-
         $mode = $this->getTrackingMode();
 
         // Server-side recording: only in 'both' or 'server_only' modes.
-        // In 'js_first' / 'js_only' we rely on the browser tracker, which boots
-        // never fire — eliminating most bot traffic.
+        // In 'js_first' / 'js_only' we rely on the browser tracker, which bots
+        // that do not execute JavaScript never fire, eliminating most bot traffic.
         if(($mode === 'both' || $mode === 'server_only') && $this->shouldTrackCurrentRequest()) {
             $this->trackCurrentRequestServerSide();
         }
@@ -996,6 +1040,12 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             'monthlyReportIncludeEvents' => 1,
             'monthlyReportLastSentPeriod' => '',
             'trackingMode' => 'js_first',
+            'clientIpSource' => 'auto',
+            'trustedProxies' => '',
+            'honeypotEnabled' => 0,
+            'honeypotAction' => 'flag',
+            'honeypotFieldName' => '',
+            'honeypotSkipForms' => '',
         ];
         $data = array_replace($defaults, $data);
         $wrapper = new InputfieldWrapper();
@@ -1047,57 +1097,26 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $f = $wire->modules->get('InputfieldMarkup');
         $f->name = 'botDetectionStatus';
         $f->label = 'Bot detection';
+        // Theme-neutral styling: the box inherits the admin theme's text colour and uses
+        // translucent tints of it, so it blends into AdminThemeUikit, Konkat and any dark
+        // variant without per-theme overrides. Only the left accent bar and the status
+        // icon carry colour: the theme's main colour for OK states, amber for warnings.
+        // rgba() lines are fallbacks for browsers without color-mix().
         $styleBlock = '<style>'
-            . '.pwna-bd-box{margin:0;padding:10px 14px;border-left:3px solid;border-radius:3px;line-height:1.5;}'
-            . '.pwna-bd-box code{padding:2px 6px;border-radius:3px;font-size:.9em;}'
-            . '.pwna-bd-box .pwna-bd-cmd{display:inline-block;margin-top:8px;padding:6px 10px;font-size:.9em;}'
-            // OK (matomo present) — light defaults
-            . '.pwna-bd-ok{background:#e8f5e9;color:#1b3a1d;border-left-color:#2e7d32;}'
-            . '.pwna-bd-ok code{background:rgba(46,125,50,.12);color:#1b3a1d;}'
-            // INFO (bundled) — light defaults
-            . '.pwna-bd-info{background:#e3f2fd;color:#0d3a5e;border-left-color:#1565c0;}'
-            . '.pwna-bd-info code{background:rgba(21,101,192,.12);color:#0d3a5e;}'
-            . '.pwna-bd-info .pwna-bd-cmd{background:#fff;color:#222;border:1px solid #b8d4ec;}'
-            // WARN (missing) — light defaults
-            . '.pwna-bd-warn{background:#fff3e0;color:#3d2a05;border-left-color:#ef6c00;}'
-            . '.pwna-bd-warn code{background:rgba(239,108,0,.12);color:#3d2a05;}'
-            . '.pwna-bd-warn .pwna-bd-cmd{background:#fff;color:#222;border:1px solid #d8c4a4;}'
-            // Dark mode (browsers honoring prefers-color-scheme)
-            . '@media (prefers-color-scheme: dark){'
-            . '  .pwna-bd-ok{background:#1b3a1d;color:#d6f0d8;border-left-color:#66bb6a;}'
-            . '  .pwna-bd-ok code{background:rgba(102,187,106,.18);color:#d6f0d8;}'
-            . '  .pwna-bd-info{background:#0d3a5e;color:#d6e6f5;border-left-color:#42a5f5;}'
-            . '  .pwna-bd-info code{background:rgba(66,165,245,.18);color:#d6e6f5;}'
-            . '  .pwna-bd-info .pwna-bd-cmd{background:#0a2742;color:#d6e6f5;border-color:#1d4d7a;}'
-            . '  .pwna-bd-warn{background:#3d2a05;color:#ffe7c2;border-left-color:#ffa726;}'
-            . '  .pwna-bd-warn code{background:rgba(255,167,38,.18);color:#ffe7c2;}'
-            . '  .pwna-bd-warn .pwna-bd-cmd{background:#2a1f08;color:#ffe7c2;border-color:#5a431a;}'
-            . '}'
-            // PW dark theme classes
-            . 'html.pw-theme-dark .pwna-bd-ok, body.pw-theme-dark .pwna-bd-ok,'
-            . 'html.AdminThemeUikitDark .pwna-bd-ok, body.AdminThemeUikitDark .pwna-bd-ok'
-            . '{background:#1b3a1d;color:#d6f0d8;border-left-color:#66bb6a;}'
-            . 'html.pw-theme-dark .pwna-bd-ok code, body.pw-theme-dark .pwna-bd-ok code,'
-            . 'html.AdminThemeUikitDark .pwna-bd-ok code, body.AdminThemeUikitDark .pwna-bd-ok code'
-            . '{background:rgba(102,187,106,.18);color:#d6f0d8;}'
-            . 'html.pw-theme-dark .pwna-bd-info, body.pw-theme-dark .pwna-bd-info,'
-            . 'html.AdminThemeUikitDark .pwna-bd-info, body.AdminThemeUikitDark .pwna-bd-info'
-            . '{background:#0d3a5e;color:#d6e6f5;border-left-color:#42a5f5;}'
-            . 'html.pw-theme-dark .pwna-bd-info code, body.pw-theme-dark .pwna-bd-info code,'
-            . 'html.AdminThemeUikitDark .pwna-bd-info code, body.AdminThemeUikitDark .pwna-bd-info code'
-            . '{background:rgba(66,165,245,.18);color:#d6e6f5;}'
-            . 'html.pw-theme-dark .pwna-bd-info .pwna-bd-cmd, body.pw-theme-dark .pwna-bd-info .pwna-bd-cmd,'
-            . 'html.AdminThemeUikitDark .pwna-bd-info .pwna-bd-cmd, body.AdminThemeUikitDark .pwna-bd-info .pwna-bd-cmd'
-            . '{background:#0a2742;color:#d6e6f5;border-color:#1d4d7a;}'
-            . 'html.pw-theme-dark .pwna-bd-warn, body.pw-theme-dark .pwna-bd-warn,'
-            . 'html.AdminThemeUikitDark .pwna-bd-warn, body.AdminThemeUikitDark .pwna-bd-warn'
-            . '{background:#3d2a05;color:#ffe7c2;border-left-color:#ffa726;}'
-            . 'html.pw-theme-dark .pwna-bd-warn code, body.pw-theme-dark .pwna-bd-warn code,'
-            . 'html.AdminThemeUikitDark .pwna-bd-warn code, body.AdminThemeUikitDark .pwna-bd-warn code'
-            . '{background:rgba(255,167,38,.18);color:#ffe7c2;}'
-            . 'html.pw-theme-dark .pwna-bd-warn .pwna-bd-cmd, body.pw-theme-dark .pwna-bd-warn .pwna-bd-cmd,'
-            . 'html.AdminThemeUikitDark .pwna-bd-warn .pwna-bd-cmd, body.AdminThemeUikitDark .pwna-bd-warn .pwna-bd-cmd'
-            . '{background:#2a1f08;color:#ffe7c2;border-color:#5a431a;}'
+            . '.pwna-bd-box{--pwna-bd-accent:var(--pw-main-color,#3eb998);margin:0;padding:10px 14px;'
+            . 'color:inherit;line-height:1.5;border-radius:4px;'
+            . 'background:rgba(127,127,127,.07);background:color-mix(in srgb,currentColor 5%,transparent);'
+            . 'border:1px solid rgba(127,127,127,.22);border:1px solid color-mix(in srgb,currentColor 14%,transparent);'
+            . 'border-left:3px solid var(--pwna-bd-accent);}'
+            . '.pwna-bd-box a{color:var(--pwna-bd-accent);}'
+            . '.pwna-bd-icon{color:var(--pwna-bd-accent);font-weight:700;margin-right:2px;}'
+            . '.pwna-bd-box code{padding:2px 6px;border-radius:3px;font-size:.9em;color:inherit;'
+            . 'background:rgba(127,127,127,.14);background:color-mix(in srgb,currentColor 10%,transparent);}'
+            . '.pwna-bd-box .pwna-bd-cmd{display:inline-block;margin-top:8px;padding:6px 10px;font-size:.9em;'
+            . 'background:rgba(127,127,127,.06);background:color-mix(in srgb,currentColor 4%,transparent);'
+            . 'border:1px solid rgba(127,127,127,.28);border:1px solid color-mix(in srgb,currentColor 18%,transparent);}'
+            . '.pwna-bd-muted{opacity:.7;}'
+            . '.pwna-bd-warn{--pwna-bd-accent:#e8a33d;}'
             . '</style>';
         // Try to fetch matomo/device-detector version info (current + latest available)
         // for an inline update notice. Done via a non-static call to the module instance.
@@ -1128,7 +1147,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             $latestSafe = htmlspecialchars($latestVer, ENT_QUOTES, 'UTF-8');
             $currentSafe = htmlspecialchars($currentVer, ENT_QUOTES, 'UTF-8');
             $urlSafe = htmlspecialchars($latestUrl, ENT_QUOTES, 'UTF-8');
-            $updateNotice = '<br><br><strong>↑ Update available:</strong> '
+            $updateNotice = '<br><br><strong><span class="pwna-bd-icon">↑</span> Update available:</strong> '
                 . "your installed version <code>{$currentSafe}</code> is older than the latest release <code>{$latestSafe}</code>. ";
             if($ddState === 'composer') {
                 $updateNotice .= 'Run <code class="pwna-bd-cmd">composer update matomo/device-detector</code> to upgrade.';
@@ -1148,25 +1167,25 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $upToDateSuffix = '';
         if(!$updateAvailable && $latestVer !== '' && $currentVer !== '' && !$versionInfo['check_failed']) {
             $latestSafe = htmlspecialchars($latestVer, ENT_QUOTES, 'UTF-8');
-            $upToDateSuffix = " <span style=\"opacity:.75\">(up to date — latest release is <code>{$latestSafe}</code>)</span>";
+            $upToDateSuffix = " <span class=\"pwna-bd-muted\">(up to date — latest release is <code>{$latestSafe}</code>)</span>";
         }
         $currentSafe = htmlspecialchars($currentVer, ENT_QUOTES, 'UTF-8');
         $versionTag = $currentVer !== '' ? " <code>{$currentSafe}</code>" : '';
 
         if($ddState === 'composer') {
-            $f->value = $styleBlock . '<p class="pwna-bd-box pwna-bd-ok"><strong>✓ matomo/device-detector loaded via Composer' . $versionTag . '.</strong>'
+            $f->value = $styleBlock . '<p class="pwna-bd-box pwna-bd-ok"><strong><span class="pwna-bd-icon">✓</span> matomo/device-detector loaded via Composer' . $versionTag . '.</strong>'
                 . $upToDateSuffix
                 . ' NativeAnalytics is using the site-wide installation.'
                 . $updateNotice
                 . '</p>';
         } elseif($ddState === 'bundled') {
-            $f->value = $styleBlock . '<p class="pwna-bd-box pwna-bd-info"><strong>✓ matomo/device-detector loaded from the bundled copy' . $versionTag . '.</strong>'
+            $f->value = $styleBlock . '<p class="pwna-bd-box pwna-bd-info"><strong><span class="pwna-bd-icon">✓</span> matomo/device-detector loaded from the bundled copy' . $versionTag . '.</strong>'
                 . $upToDateSuffix
                 . ' NativeAnalytics is using the version shipped with this module. For automatic updates between module releases, install the library site-wide:<br><code class="pwna-bd-cmd">composer require matomo/device-detector</code><br>The site-wide copy will take precedence over the bundled one automatically.'
                 . $updateNotice
                 . '</p>';
         } else {
-            $f->value = $styleBlock . '<p class="pwna-bd-box pwna-bd-warn"><strong>⚠ matomo/device-detector not available.</strong> The bundled <code>lib/</code> folder may have been removed or corrupted. Reinstall the module, or install the library site-wide:<br><code class="pwna-bd-cmd">composer require matomo/device-detector</code></p>';
+            $f->value = $styleBlock . '<p class="pwna-bd-box pwna-bd-warn"><strong><span class="pwna-bd-icon">⚠</span> matomo/device-detector not available.</strong> The bundled <code>lib/</code> folder may have been removed or corrupted. Reinstall the module, or install the library site-wide:<br><code class="pwna-bd-cmd">composer require matomo/device-detector</code></p>';
         }
         $f->showIf = 'trackingEnabled=1';
         $wrapper->add($f);
@@ -1475,6 +1494,45 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $f->notes = 'Examples: 1.2.3.4 (exact match), 1.2.3. (CIDR-like prefix matching), 2001:db8: (IPv6 prefix).';
         $wrapper->add($f);
 
+        // Visitor IP source (security: forwarding headers are spoofable)
+        $ipDiag = ['resolved' => '', 'remote_addr' => '', 'untrusted_forwarder' => false];
+        try {
+            $naInstance = $wire->modules->get('NativeAnalytics');
+            if($naInstance && method_exists($naInstance, 'getClientIpDiagnostics')) $ipDiag = array_merge($ipDiag, $naInstance->getClientIpDiagnostics());
+        } catch(\Throwable $e) {}
+
+        $f = $wire->modules->get('InputfieldSelect');
+        $f->name = 'clientIpSource';
+        $f->showIf = 'trackingEnabled=1';
+        $f->label = 'Visitor IP source';
+        $f->icon = 'map-marker';
+        $f->addOptions([
+            'auto' => 'Automatic (recommended)',
+            'remote_addr' => 'Direct connection only',
+            'legacy' => 'Legacy — spoofable, not recommended',
+        ]);
+        $f->value = in_array((string) $data['clientIpSource'], ['auto', 'remote_addr', 'legacy'], true) ? (string) $data['clientIpSource'] : 'auto';
+        $f->required = true;
+        $f->description = 'The visitor IP is used for the IP blocklist, the "single IP" bot rule and cookie-less visitor counting. Headers such as X-Forwarded-For can be faked by any client. **Automatic** accepts them only from Cloudflare (detected automatically) and from private/local or listed proxies. **Direct connection only** never uses them. **Legacy** trusts them from anyone (the behaviour before 1.0.37).';
+        $diagNote = 'Detected for your current request: visitor IP ' . ($ipDiag['resolved'] !== '' ? $ipDiag['resolved'] : 'unknown')
+            . ', direct peer (REMOTE_ADDR) ' . ($ipDiag['remote_addr'] !== '' ? $ipDiag['remote_addr'] : 'unknown') . '.';
+        $f->notes = $diagNote;
+        $wrapper->add($f);
+
+        $f = $wire->modules->get('InputfieldTextarea');
+        $f->name = 'trustedProxies';
+        $f->showIf = 'trackingEnabled=1,clientIpSource=auto';
+        $f->label = 'Trusted proxies';
+        $f->rows = 3;
+        $f->value = (string) ($data['trustedProxies'] ?? '');
+        $f->description = 'Public IP addresses or CIDR ranges of your own load balancer or reverse proxy, one per line. Private/local addresses and Cloudflare are trusted automatically.';
+        $f->notes = 'Examples: 203.0.113.10, 198.51.100.0/24, 2001:db8::/32';
+        if(!empty($ipDiag['untrusted_forwarder'])) {
+            $f->notes .= "\n⚠ Your server receives forwarding headers from " . $ipDiag['remote_addr']
+                . ', which is not trusted. If this is your hosting load balancer, add it here — otherwise all visitors are recorded with that one IP.';
+        }
+        $wrapper->add($f);
+
         $f = $wire->modules->get('InputfieldText');
         $f->name = 'searchQueryVars';
         $f->showIf = 'trackingEnabled=1';
@@ -1716,6 +1774,54 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         if(!empty($current)) $f->attr('checked', 'checked');
         $wrapper->add($f);
 
+
+        // ------------------------------------------------------------------
+        // Form spam honeypot
+        // ------------------------------------------------------------------
+        $f = $wire->modules->get('InputfieldCheckbox');
+        $f->name = 'honeypotEnabled';
+        $f->label = 'Form spam honeypot';
+        $f->label2 = 'Add a hidden honeypot field to front-end POST forms';
+        $f->icon = 'bug';
+        $f->description = 'Adds an invisible field to every POST form on the front end (FormBuilder, LoginRegister, custom forms). People never see it; spam bots fill it in. A filled honeypot flags that visitor\'s analytics session as a bot (reason "honeypot"), which the behavioural filter cannot do for multi-page form spam. Works in every tracking mode.';
+        $f->notes = 'Exclude a single form by adding the attribute data-pwna-no-honeypot to its <form> tag, or list its id below. Superusers are never affected.';
+        if(!empty($data['honeypotEnabled'])) $f->attr('checked', 'checked');
+        $wrapper->add($f);
+
+        $f = $wire->modules->get('InputfieldRadios');
+        $f->name = 'honeypotAction';
+        $f->showIf = 'honeypotEnabled=1';
+        $f->label = 'When the honeypot is filled';
+        $f->addOptions([
+            'flag' => 'Flag the session as a bot only (recommended — the form still processes normally)',
+            'block' => 'Flag and stop the submission (HTTP 403 before any form processing)',
+        ]);
+        $f->value = (string) $data['honeypotAction'] === 'block' ? 'block' : 'flag';
+        $f->description = 'Blocking also stops the spam itself. Start with "flag only" and check the Bot traffic report on the System tab before switching to blocking.';
+        $wrapper->add($f);
+
+        $f = $wire->modules->get('InputfieldText');
+        $f->name = 'honeypotFieldName';
+        $f->showIf = 'honeypotEnabled=1';
+        $f->label = 'Honeypot field name';
+        $f->value = (string) ($data['honeypotFieldName'] ?? '');
+        $f->pattern = '^[A-Za-z][A-Za-z0-9_-]{2,40}$';
+        $f->description = 'Leave empty to use an automatic, site-specific name. Must not match any real field name in your forms.';
+        try {
+            if(isset($naInstance) && $naInstance && method_exists($naInstance, 'getHoneypotFieldName')) {
+                $f->notes = 'Current name: ' . $naInstance->getHoneypotFieldName();
+            }
+        } catch(\Throwable $e) {}
+        $wrapper->add($f);
+
+        $f = $wire->modules->get('InputfieldText');
+        $f->name = 'honeypotSkipForms';
+        $f->showIf = 'honeypotEnabled=1';
+        $f->label = 'Skip forms with these ids';
+        $f->value = (string) ($data['honeypotSkipForms'] ?? '');
+        $f->description = 'Comma-separated form id attributes that must not get the honeypot (for example forms posting to external services).';
+        $wrapper->add($f);
+
         // ------------------------------------------------------------------
         // Reorganize the flat field list into grouped, collapsible fieldsets
         // with two-column layouts where it helps reduce vertical scrolling.
@@ -1795,6 +1901,19 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
                     ['ipBlocklist', 50],
                     ['suspiciousPathPatterns', 50],
                     ['searchQueryVars', 50],
+                    ['clientIpSource', 50],
+                    ['trustedProxies', 50],
+                ],
+            ],
+            [
+                'Form spam protection',
+                'bug',
+                true,
+                [
+                    ['honeypotEnabled', 100],
+                    ['honeypotAction', 100],
+                    ['honeypotFieldName', 50],
+                    ['honeypotSkipForms', 50],
                 ],
             ],
             [
@@ -1889,7 +2008,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             if(strpos($page->path(), $prefix) === 0) return false;
         }
 
-        return true;
+        return $this->callShouldTrack($page, 'server');
     }
 
     protected function shouldInjectTrackerCurrentRequest() {
@@ -1910,7 +2029,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             if(strpos($page->path(), $prefix) === 0) return false;
         }
 
-        return true;
+        return $this->callShouldTrack($page, 'tracker');
     }
 
     protected function hasConsentCookie() {
@@ -2390,6 +2509,9 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             'status_code' => $statusCode,
         ];
 
+        $row = $this->callBeforeSaveHit($row, 'server');
+        if($row === null) return;
+
         try {
             $this->insert(self::HITS_TABLE, $row);
             $this->recordSessionAttribution($row);
@@ -2828,7 +2950,12 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $pageId = max(0, (int) ($payload['pageId'] ?? 0));
         $pageTitle = $this->cleanTextValue((string) ($payload['pageTitle'] ?? ''), 255);
         $template = trim((string) ($payload['template'] ?? ''));
-        if($endpointRequest) [$pageId, $template] = $this->verifyPayloadPage($pageId, $template);
+        if($endpointRequest) {
+            [$pageId, $template, $pageTitle, $isOn404Page] = $this->verifyPayloadPage($pageId, $template, $pageTitle, $path);
+            // The 404 page is only ever shown with a 404 status, and real 404
+            // beacons have already been through the 404 bot filtering above.
+            if($isOn404Page && $statusCode !== 404) $this->sendTrackingResponse(204);
+        }
         if($statusCode === 404) {
             $template = '404';
             $pageId = 0;
@@ -2883,6 +3010,9 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             'status_code' => $statusCode,
         ];
 
+        $row = $this->callBeforeSaveHit($row, 'tracker');
+        if($row === null) $this->sendTrackingResponse(204);
+
         try {
             $this->insert(self::HITS_TABLE, $row);
             $this->recordSessionAttribution($row);
@@ -2900,24 +3030,112 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
     }
 
     /**
-     * Beacons sent to /pwna-track/ carry the page ID and template from the
-     * browser. Both are checked against the real page so a forged beacon
-     * cannot attribute hits to admin pages, non-existent IDs or invented
-     * template names. The (language-specific) title stays as sent.
+     * Beacons sent to /pwna-track/ carry the page ID, template, title and path
+     * from the browser. They are checked against the real page so a forged
+     * beacon cannot attribute hits to admin pages, non-existent IDs or invented
+     * template names, and cannot pin a made-up path or title on a real page:
      *
-     * @return array [int $pageId, string $template]
+     *  - the page must be published and outside the admin tree, which rules
+     *    out users, roles, permissions, repeater items and other system pages
+     *    a visitor never renders;
+     *  - the path must be the page's own path (in any language), optionally
+     *    followed by URL segments or a page number when the template enables
+     *    them. The 404 page is exempt,
+     *    since it is shown at whatever URL was requested;
+     *  - the title must be one of the page's own titles (in any language),
+     *    otherwise the page's current title is used.
+     *
+     * A beacon that fails the page or path check is kept but loses its page
+     * attribution (ID 0, no template), the same as a beacon without a page ID.
+     *
+     * @return array [int $pageId, string $template, string $pageTitle, bool $is404Page]
      */
-    protected function verifyPayloadPage($pageId, $template) {
+    protected function verifyPayloadPage($pageId, $template, $pageTitle, $path) {
         $pageId = (int) $pageId;
         $template = (string) $this->wire('sanitizer')->name((string) $template);
-        if($pageId < 1) return [0, $template === '404' ? '404' : ''];
+        if($pageId < 1) return [0, $template === '404' ? '404' : '', $pageTitle, false];
         try {
             $p = $this->wire('pages')->get('id=' . $pageId . ', include=all');
         } catch(\Throwable $e) {
             $p = null;
         }
-        if(!$p || !$p->id || !$p->template || $p->template->name === 'admin' || $p->isTrash()) return [0, ''];
-        return [(int) $p->id, (string) $p->template->name];
+        if(!$p || !$p->id || !$p->template || $p->template->name === 'admin' || $p->isTrash()) return [0, '', $pageTitle, false];
+        // Users, roles, permissions and repeater items all live under the admin
+        // tree. (A full $p->viewable() check would also cover access-restricted
+        // branches, but costs ~3 ms per beacon in role lookups.)
+        if($p->isUnpublished() || (int) $p->rootParent()->id === (int) $this->wire('config')->adminRootPageID) return [0, '', $pageTitle, false];
+
+        $is404Page = $this->is404Page($p);
+        if(!$is404Page && !$this->pathBelongsToPage((string) $path, $p)) return [0, '', $pageTitle, false];
+
+        $ownTitle = $this->cleanTextValue((string) $p->get('title'), 255);
+        if((string) $pageTitle !== $ownTitle && !$this->isTitleInAnyLanguage($p, (string) $pageTitle)) {
+            $pageTitle = $ownTitle;
+        }
+
+        return [(int) $p->id, (string) $p->template->name, $pageTitle, $is404Page];
+    }
+
+    /**
+     * True when $path is the page's path in any language, or that path followed
+     * by URL segments / a page number where the template allows them. $path is
+     * a storage path (site root already removed); a query string or fragment
+     * is ignored.
+     */
+    protected function pathBelongsToPage($path, Page $page) {
+        $path = (string) preg_replace('/[?#].*$/', '', (string) $path);
+        if($path === '') return false;
+        $requested = array_unique([$path, rawurldecode($path)]);
+
+        $own = [(string) $page->path()];
+        if($this->wire('modules')->isInstalled('LanguageSupportPageNames') && $this->wire('languages')) {
+            foreach($this->wire('languages') as $language) {
+                try {
+                    $own[] = (string) $page->localPath($language);
+                } catch(\Throwable $e) {
+                    // ignore: fall back to the default path
+                }
+            }
+        }
+
+        // Anything after the page's own path is only legitimate when the
+        // template accepts it: URL segments, or a page number (/page2) when
+        // pagination is enabled. Without this a forged beacon could pin any
+        // path on the home page (whose base path is empty) or a child page's
+        // path on its parent.
+        $tpl = $page->template;
+        $allowSegments = $tpl && !empty($tpl->urlSegments);
+        $allowPageNum = $tpl && !empty($tpl->allowPageNum);
+
+        foreach(array_unique($own) as $ownPath) {
+            $base = rtrim($ownPath, '/');
+            foreach($requested as $candidate) {
+                if(rtrim($candidate, '/') === $base) return true;
+                if($base !== '' && strpos($candidate, $base . '/') !== 0) continue;
+                $suffix = trim((string) substr($candidate, strlen($base)), '/');
+                if($suffix === '' || $allowSegments) return true;
+                if($allowPageNum && preg_match('/^[A-Za-z_-]*[0-9]+$/', $suffix)) return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * True when $title is the page's title in one of the site's languages.
+     * Only reached when the title doesn't match the current language's; sites
+     * without multi-language fields return straight away.
+     */
+    protected function isTitleInAnyLanguage(Page $page, $title) {
+        $languages = $this->wire('languages');
+        if($title === '' || !$languages || !$this->wire('modules')->isInstalled('LanguageSupportFields')) return false;
+        foreach($languages as $language) {
+            try {
+                if($this->cleanTextValue((string) $page->getLanguageValue($language, 'title'), 255) === $title) return true;
+            } catch(\Throwable $e) {
+                return false; // title is not a multi-language field
+            }
+        }
+        return false;
     }
 
     protected function handleTimeOnPageRequest(array $payload) {
@@ -2980,7 +3198,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $pageId = max(0, (int) ($payload['pageId'] ?? 0));
         $pageTitle = $this->cleanTextValue((string) ($payload['pageTitle'] ?? ''), 255);
         $template = trim((string) ($payload['template'] ?? ''));
-        if($endpointRequest) [$pageId, $template] = $this->verifyPayloadPage($pageId, $template);
+        if($endpointRequest) [$pageId, $template, $pageTitle] = $this->verifyPayloadPage($pageId, $template, $pageTitle, $path);
         if(!$endpointRequest && $page && $page->id && $page->template && $page->template->name !== 'admin') {
             if($pageId < 1) $pageId = (int) $page->id;
             if($pageTitle === '') $pageTitle = $this->cleanTextValue((string) $page->get('title'), 255);
@@ -3014,6 +3232,9 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             'visitor_hash' => $this->hashValue($visitorId),
             'session_hash' => $this->hashValue($sessionId),
         ];
+
+        $row = $this->callBeforeSaveEvent($row);
+        if($row === null) $this->sendTrackingResponse(204);
 
         try {
             $this->insert(self::EVENTS_TABLE, $row);
@@ -4301,6 +4522,216 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         $stmt = $this->wire('database')->prepare($sql);
         $stmt->execute($where['params']);
         return $stmt->fetchAll(\PDO::FETCH_ASSOC) ?: [];
+    }
+
+    // ------------------------------------------------------------------
+    // Content insights & bot report
+    // ------------------------------------------------------------------
+
+    /**
+     * Published, viewable pages that received no (human) views in the range.
+     *
+     * Visits come from the daily aggregates, so the report also works for
+     * ranges beyond raw-hit retention. Pages created after the range start are
+     * ignored (they had no chance to collect visits). Candidate pages are read
+     * as IDs only; full pages are loaded just for the rows returned.
+     *
+     * @param mixed $days Range spec as used by the other report methods.
+     * @param int $limit
+     * @param array $filters Supports 'template'.
+     * @return array ['rows' => [...], 'total' => int, 'checked' => int, 'capped' => bool]
+     */
+    public function getPagesWithoutVisits($days = 30, $limit = 50, array $filters = []) {
+        $result = ['rows' => [], 'total' => 0, 'checked' => 0, 'capped' => false];
+        $range = $this->getDateRangeForDays($days);
+        $config = $this->wire('config');
+        $cap = 5000;
+
+        $templateIds = [];
+        foreach($this->wire('templates') as $t) {
+            if(($t->flags & Template::flagSystem) || in_array($t->name, ['admin', 'user', 'role', 'permission', 'language'], true)) continue;
+            if(!empty($filters['template']) && $t->name !== (string) $filters['template']) continue;
+            if(!$t->filenameExists()) continue;
+            $templateIds[] = (int) $t->id;
+        }
+        if(!$templateIds) return $result;
+
+        try {
+            $stmt = $this->wire('database')->prepare("SELECT DISTINCT `page_id` FROM `" . self::DAILY_TABLE . "`
+                WHERE `day` >= :start AND `day` <= :end AND `page_id` > 0");
+            $stmt->execute([':start' => $range['start_date'], ':end' => $range['end_date']]);
+            $visited = array_flip(array_map('intval', $stmt->fetchAll(\PDO::FETCH_COLUMN) ?: []));
+
+            $selector = 'template=' . implode('|', $templateIds)
+                . ', status<' . Page::statusUnpublished
+                . ', include=hidden'
+                . ', created<' . strtotime($range['start'])
+                . ', has_parent!=' . (int) $config->adminRootPageID
+                . ', id!=' . (int) $config->http404PageID
+                . ', sort=-modified, limit=' . ($cap + 1);
+            $ids = $this->wire('pages')->findIDs($selector);
+        } catch(\Throwable $e) {
+            $this->wire('log')->save('native-analytics', 'Pages without visits report failed: ' . $e->getMessage());
+            return $result;
+        }
+
+        if(count($ids) > $cap) {
+            $result['capped'] = true;
+            $ids = array_slice($ids, 0, $cap);
+        }
+        $result['checked'] = count($ids);
+        $unvisited = array_values(array_filter(array_map('intval', $ids), function($id) use ($visited) { return !isset($visited[$id]); }));
+        $result['total'] = count($unvisited);
+
+        $excluded = $this->getExcludedPathPrefixes();
+        foreach(array_chunk($unvisited, 100) as $chunk) {
+            foreach($this->wire('pages')->getById($chunk) as $p) {
+                $path = (string) $p->path();
+                foreach($excluded as $prefix) {
+                    if(strpos($path, $prefix) === 0) continue 2;
+                }
+                $result['rows'][] = [
+                    'page_id' => (int) $p->id,
+                    'page_title' => (string) $p->get('title|name'),
+                    'path' => $path,
+                    'template' => (string) $p->template->name,
+                    'modified' => date('Y-m-d H:i:s', (int) $p->modified),
+                    'edit_url' => $p->editable() ? (string) $p->editUrl() : '',
+                ];
+                if(count($result['rows']) >= $limit) break 2;
+            }
+        }
+        return $result;
+    }
+
+    /**
+     * Pages whose views changed most versus the previous period of equal length.
+     *
+     * @param mixed $days Range spec.
+     * @param string $direction 'down' (declining) or 'up' (growing).
+     * @param int $limit
+     * @param int $minViews Minimum views in the busier period, to ignore noise.
+     * @param array $filters Supports 'template'.
+     * @return array Rows: page_id, page_title, path, template, current, previous, change_pct
+     */
+    public function getPageTrends($days = 30, $direction = 'down', $limit = 15, $minViews = 10, array $filters = []) {
+        $range = $this->getDateRangeForDays($days);
+        $start = $range['start_date'];
+        $end = $range['end_date'];
+        $length = max(1, (int) round((strtotime($end) - strtotime($start)) / 86400) + 1);
+        $prevEnd = date('Y-m-d', strtotime($start . ' -1 day'));
+        $prevStart = date('Y-m-d', strtotime($start . ' -' . $length . ' days'));
+        $down = $direction !== 'up';
+
+        $where = '`day` >= :prev_start AND `day` <= :end AND `page_id` > 0';
+        $params = [
+            ':prev_start' => $prevStart, ':end' => $end,
+            ':cs' => $start, ':ce' => $end, ':ps' => $prevStart, ':pe' => $prevEnd,
+            ':min' => max(1, (int) $minViews),
+        ];
+        if(!empty($filters['template'])) {
+            $where .= ' AND `template` = :template';
+            $params[':template'] = (string) $filters['template'];
+        }
+        // Derived table: MySQL/MariaDB do not allow arithmetic on SELECT aliases
+        // in HAVING/ORDER BY, so the per-page sums are computed first.
+        $filter = $down ? 't.prev_views >= :min AND t.cur_views < t.prev_views' : 't.cur_views >= :min AND t.cur_views > t.prev_views';
+        $order = $down
+            ? '(t.prev_views - t.cur_views) / t.prev_views DESC, t.prev_views DESC'
+            : '(t.cur_views - t.prev_views) / GREATEST(t.prev_views, 1) DESC, t.cur_views DESC';
+
+        $sql = "SELECT t.* FROM (
+                    SELECT `page_id`, MAX(`page_title`) AS page_title, MAX(`path`) AS path, MAX(`template`) AS template,
+                        SUM(CASE WHEN `day` BETWEEN :cs AND :ce THEN `views` ELSE 0 END) AS cur_views,
+                        SUM(CASE WHEN `day` BETWEEN :ps AND :pe THEN `views` ELSE 0 END) AS prev_views
+                    FROM `" . self::DAILY_TABLE . "`
+                    WHERE {$where}
+                    GROUP BY `page_id`
+                ) t
+                WHERE {$filter}
+                ORDER BY {$order}
+                LIMIT " . max(1, (int) $limit);
+        try {
+            $stmt = $this->wire('database')->prepare($sql);
+            $stmt->execute($params);
+            $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC) ?: [];
+        } catch(\Throwable $e) {
+            $this->wire('log')->save('native-analytics', 'Page trends report failed: ' . $e->getMessage());
+            return [];
+        }
+        foreach($rows as &$row) {
+            $cur = (int) $row['cur_views'];
+            $prev = (int) $row['prev_views'];
+            unset($row['cur_views'], $row['prev_views']);
+            $row['current'] = $cur;
+            $row['previous'] = $prev;
+            $row['change_pct'] = $prev > 0 ? round((($cur - $prev) / $prev) * 100, 1) : null;
+            $row = $this->normalizeAnalyticsRowForDisplay($row);
+        }
+        unset($row);
+        return $rows;
+    }
+
+    /**
+     * Human-readable labels for bot_reason tags.
+     */
+    public function getBotReasonLabels() {
+        return [
+            'ua_fleet' => 'Proxy fleet (one user agent, many IPs)',
+            'ip_excessive' => 'Too many sessions from one IP',
+            'scanner_404' => '404 scanner',
+            'honeypot' => 'Form honeypot',
+            '' => 'Other',
+        ];
+    }
+
+    /**
+     * Bot-flagged traffic in the range, grouped by reason.
+     *
+     * @param mixed $days Range spec.
+     * @return array ['rows' => [reason, label, hits, sessions, events], 'bot_hits' => int, 'human_hits' => int]
+     */
+    public function getBotTrafficByReason($days = 30) {
+        $range = $this->getDateRangeForDays($days);
+        $params = [':start' => $range['start'], ':end' => $range['end']];
+        $db = $this->wire('database');
+        $labels = $this->getBotReasonLabels();
+        $out = ['rows' => [], 'bot_hits' => 0, 'human_hits' => 0];
+        $byReason = [];
+        try {
+            $stmt = $db->prepare("SELECT `is_bot`, `bot_reason`, COUNT(*) AS hits, COUNT(DISTINCT `session_hash`) AS sessions
+                FROM `" . self::HITS_TABLE . "`
+                WHERE `created_at` >= :start AND `created_at` <= :end
+                GROUP BY `is_bot`, `bot_reason`");
+            $stmt->execute($params);
+            foreach($stmt->fetchAll(\PDO::FETCH_ASSOC) ?: [] as $r) {
+                if((int) $r['is_bot'] === 0) {
+                    $out['human_hits'] += (int) $r['hits'];
+                    continue;
+                }
+                $reason = (string) $r['bot_reason'];
+                $byReason[$reason] = ['hits' => (int) $r['hits'], 'sessions' => (int) $r['sessions'], 'events' => 0];
+                $out['bot_hits'] += (int) $r['hits'];
+            }
+            $stmt = $db->prepare("SELECT `bot_reason`, COUNT(*) AS events
+                FROM `" . self::EVENTS_TABLE . "`
+                WHERE `created_at` >= :start AND `created_at` <= :end AND `is_bot` = 1
+                GROUP BY `bot_reason`");
+            $stmt->execute($params);
+            foreach($stmt->fetchAll(\PDO::FETCH_ASSOC) ?: [] as $r) {
+                $reason = (string) $r['bot_reason'];
+                if(!isset($byReason[$reason])) $byReason[$reason] = ['hits' => 0, 'sessions' => 0, 'events' => 0];
+                $byReason[$reason]['events'] = (int) $r['events'];
+            }
+        } catch(\Throwable $e) {
+            $this->wire('log')->save('native-analytics', 'Bot traffic report failed: ' . $e->getMessage());
+            return $out;
+        }
+        uasort($byReason, function($a, $b) { return ($b['hits'] + $b['events']) <=> ($a['hits'] + $a['events']); });
+        foreach($byReason as $reason => $r) {
+            $out['rows'][] = ['reason' => $reason, 'label' => $labels[$reason] ?? $reason] + $r;
+        }
+        return $out;
     }
 
     public function getPageSummary($pageId, $days = 30) {
@@ -6812,15 +7243,361 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         }
     }
 
+    /**
+     * Cloudflare edge ranges (https://www.cloudflare.com/ips/). CF-Connecting-IP
+     * is only trusted when the connecting peer is inside one of these.
+     */
+    const CLOUDFLARE_RANGES = [
+        '173.245.48.0/20', '103.21.244.0/22', '103.22.200.0/22', '103.31.4.0/22',
+        '141.101.64.0/18', '108.162.192.0/18', '190.93.240.0/20', '188.114.96.0/20',
+        '197.234.240.0/22', '198.41.128.0/17', '162.158.0.0/15', '104.16.0.0/13',
+        '104.24.0.0/14', '172.64.0.0/13', '131.0.72.0/22',
+        '2400:cb00::/32', '2606:4700::/32', '2803:f800::/32', '2405:b500::/32',
+        '2405:8100::/32', '2a06:98c0::/29', '2c0f:f248::/32',
+    ];
+
+    /**
+     * Resolve the real visitor IP without trusting spoofable headers.
+     *
+     * Forwarding headers (CF-Connecting-IP, X-Forwarded-For) can be sent by
+     * anyone, so they are only honoured when the direct peer (REMOTE_ADDR) is a
+     * proxy we trust:
+     *  - auto (default): CF-Connecting-IP when the peer is a Cloudflare edge;
+     *    X-Forwarded-For when the peer is a private/loopback address (local
+     *    reverse proxy, Docker) or listed in "Trusted proxies".
+     *  - remote_addr: never trust forwarding headers.
+     *
+     * For X-Forwarded-For the chain is walked from the right, skipping trusted
+     * hops, so a client-supplied left-most value cannot be injected.
+     */
     protected function getClientIp() {
-        foreach(['HTTP_CF_CONNECTING_IP', 'HTTP_X_FORWARDED_FOR', 'REMOTE_ADDR'] as $key) {
-            if(empty($_SERVER[$key])) continue;
-            $value = trim((string) $_SERVER[$key]);
-            if(strpos($value, ',') !== false) $value = trim(explode(',', $value)[0]);
-            return $value;
+        static $resolved = null;
+        if($resolved !== null) return $resolved;
+
+        $mode = (string) $this->clientIpSource;
+        $remote = $this->normalizeIp($_SERVER['REMOTE_ADDR'] ?? '');
+
+        if($mode === 'legacy') {
+            // Pre-1.0.37 behaviour: first forwarding header wins, from any peer.
+            // Spoofable; only for hosts whose proxy IPs cannot be listed.
+            foreach(['HTTP_CF_CONNECTING_IP', 'HTTP_X_FORWARDED_FOR'] as $key) {
+                if(empty($_SERVER[$key])) continue;
+                $ip = $this->normalizeIp(explode(',', (string) $_SERVER[$key])[0]);
+                if($ip !== '') return $resolved = $ip;
+            }
+            return $resolved = $remote;
         }
-        return '';
+
+        $resolved = $remote;
+        if($remote === '' || $mode === 'remote_addr') return $resolved;
+
+        if($this->ipInRanges($remote, self::CLOUDFLARE_RANGES)) {
+            $cf = $this->normalizeIp($_SERVER['HTTP_CF_CONNECTING_IP'] ?? '');
+            if($cf !== '') return $resolved = $cf;
+        }
+
+        if($this->isTrustedProxyIp($remote) && !empty($_SERVER['HTTP_X_FORWARDED_FOR'])) {
+            $chain = array_reverse(array_map('trim', explode(',', (string) $_SERVER['HTTP_X_FORWARDED_FOR'])));
+            foreach($chain as $hop) {
+                $hop = $this->normalizeIp($hop);
+                if($hop === '') break; // malformed: stop rather than trust further-left values
+                $resolved = $hop;
+                if(!$this->isTrustedProxyIp($hop) && !$this->ipInRanges($hop, self::CLOUDFLARE_RANGES)) break;
+            }
+        }
+        return $resolved;
     }
+
+    /**
+     * Public read-only view of the resolved visitor IP and the raw peer, for
+     * diagnostics in the module settings.
+     *
+     * @return array ['resolved' => string, 'remote_addr' => string]
+     */
+    public function getClientIpDiagnostics() {
+        $remote = $this->normalizeIp($_SERVER['REMOTE_ADDR'] ?? '');
+        $hasForwarded = !empty($_SERVER['HTTP_X_FORWARDED_FOR']) || !empty($_SERVER['HTTP_CF_CONNECTING_IP']);
+        return [
+            'resolved' => $this->getClientIp(),
+            'remote_addr' => $remote,
+            'has_forwarded' => $hasForwarded,
+            // Forwarding headers arrive from a peer that is not trusted: either a
+            // spoof attempt or (far more likely on this admin request) an
+            // unlisted load balancer whose IP belongs in "Trusted proxies".
+            'untrusted_forwarder' => $hasForwarded && $remote !== ''
+                && (string) $this->clientIpSource === 'auto'
+                && !$this->isTrustedProxyIp($remote)
+                && !$this->ipInRanges($remote, self::CLOUDFLARE_RANGES),
+        ];
+    }
+
+    protected function normalizeIp($value) {
+        $value = trim((string) $value);
+        // Strip IPv4 port ("1.2.3.4:567") and IPv6 brackets ("[::1]:443").
+        if(preg_match('/^\[([0-9a-f:.]+)\](?::\d+)?$/i', $value, $m)) $value = $m[1];
+        elseif(preg_match('/^(\d{1,3}(?:\.\d{1,3}){3}):\d+$/', $value, $m)) $value = $m[1];
+        return filter_var($value, FILTER_VALIDATE_IP) !== false ? $value : '';
+    }
+
+    protected function isTrustedProxyIp($ip) {
+        if($ip === '') return false;
+        // Private and loopback peers are local reverse proxies (nginx, Docker, load balancers).
+        if(filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) === false) return true;
+        $list = preg_split('/[\s,]+/', trim((string) $this->trustedProxies)) ?: [];
+        return $this->ipInRanges($ip, array_filter($list));
+    }
+
+    /**
+     * True when $ip matches any entry: a single IP or CIDR (IPv4 or IPv6).
+     */
+    protected function ipInRanges($ip, array $ranges) {
+        $bin = @inet_pton($ip);
+        if($bin === false) return false;
+        foreach($ranges as $range) {
+            $range = trim((string) $range);
+            if($range === '') continue;
+            $bits = null;
+            if(strpos($range, '/') !== false) {
+                [$range, $bits] = explode('/', $range, 2);
+                $bits = (int) $bits;
+            }
+            $net = @inet_pton($range);
+            if($net === false || strlen($net) !== strlen($bin)) continue;
+            $max = strlen($bin) * 8;
+            if($bits === null || $bits >= $max) {
+                if($net === $bin) return true;
+                continue;
+            }
+            if($bits <= 0) return true;
+            $bytes = intdiv($bits, 8);
+            if($bytes && substr($bin, 0, $bytes) !== substr($net, 0, $bytes)) continue;
+            $rem = $bits % 8;
+            if($rem === 0) return true;
+            $mask = (0xFF << (8 - $rem)) & 0xFF;
+            if((ord($bin[$bytes]) & $mask) === (ord($net[$bytes]) & $mask)) return true;
+        }
+        return false;
+    }
+
+    // ------------------------------------------------------------------
+    // Form spam honeypot
+    // ------------------------------------------------------------------
+
+    /**
+     * Name of the hidden honeypot input. Defaults to a per-site name derived
+     * from the hash salt, so bots cannot learn one name for all sites.
+     */
+    public function getHoneypotFieldName() {
+        $name = trim((string) $this->honeypotFieldName);
+        if($name !== '' && preg_match('/^[A-Za-z][A-Za-z0-9_-]{2,40}$/', $name)) return $name;
+        return 'website_' . substr(hash('sha256', (string) $this->hashSalt . '|honeypot'), 0, 6);
+    }
+
+    protected function getHoneypotSkipForms() {
+        $list = preg_split('/[\s,]+/', trim((string) $this->honeypotSkipForms)) ?: [];
+        $out = [];
+        foreach($list as $id) {
+            $id = trim($id, " \t#");
+            if($id !== '' && preg_match('/^[A-Za-z0-9_:.-]{1,128}$/', $id)) $out[$id] = true;
+        }
+        return $out;
+    }
+
+    /**
+     * Inspect a POST for a filled honeypot. Runs in ready(), before form
+     * processors (FormBuilder, LoginRegister, custom templates) see the request.
+     * A hit flags every session we can attribute to the submitter; with the
+     * "block" action the request is stopped with HTTP 403.
+     */
+    protected function checkHoneypotSubmission() {
+        if(strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? '')) !== 'POST') return;
+        $name = $this->getHoneypotFieldName();
+        if(!isset($_POST[$name])) return;
+        $value = $_POST[$name];
+        if(is_array($value) || trim((string) $value) === '') return;
+        if($this->wire('user')->isSuperuser()) return; // never act on site admins (autofill tests)
+
+        // Raw session ids we can attribute: the JS tracker's (copied into the
+        // companion field), the server-side cookie, or the cookieless fingerprint.
+        $rawIds = [];
+        $jsSid = isset($_POST[$name . '_s']) && !is_array($_POST[$name . '_s']) ? trim((string) $_POST[$name . '_s']) : '';
+        if($jsSid !== '' && preg_match('/^[A-Za-z0-9_-]{4,96}$/', $jsSid)) $rawIds[] = $jsSid;
+        $cookieSid = isset($_COOKIE['pwna_sid']) ? trim((string) $_COOKIE['pwna_sid']) : '';
+        if($cookieSid !== '' && preg_match('/^[A-Za-z0-9_-]{4,96}$/', $cookieSid)) $rawIds[] = $cookieSid;
+        if($this->isCookielessMode()) $rawIds[] = $this->getCookielessTrackingIds()['session_id'];
+
+        $hashes = [];
+        foreach(array_unique($rawIds) as $raw) {
+            $hash = $this->hashValue($raw);
+            $hashes[] = $hash;
+            $this->markSessionHashAsBot($hash, 'honeypot');
+        }
+
+        $action = (string) $this->honeypotAction === 'block' ? 'block' : 'flag';
+        try {
+            $result = $this->honeypotTriggered($hashes, $action);
+            if($result === 'block' || $result === 'allow' || $result === 'flag') $action = $result === 'allow' ? 'flag' : $result;
+        } catch(\Throwable $e) {
+            $this->wire('log')->save('native-analytics', 'honeypotTriggered hook failed: ' . $e->getMessage());
+        }
+
+        if($action === 'block') {
+            if(!headers_sent()) {
+                http_response_code(403);
+                header('Content-Type: text/plain; charset=utf-8');
+                header('X-Robots-Tag: noindex, nofollow');
+            }
+            echo 'Forbidden';
+            exit;
+        }
+    }
+
+    /**
+     * Page::render hook: add the hidden honeypot to every POST form of a full
+     * HTML document. Forms opt out with data-pwna-no-honeypot or by id in the
+     * "Skip forms" setting. Non-HTML responses are never touched.
+     */
+    public function injectHoneypot(HookEvent $event) {
+        $html = (string) $event->return;
+        if($html === '' || stripos($html, '<form') === false) return;
+        if(stripos($html, '</body>') === false && stripos($html, '</html>') === false) return;
+        if(function_exists('headers_list')) {
+            foreach(headers_list() as $header) {
+                if(stripos($header, 'content-type:') === 0 && stripos($header, 'html') === false) return;
+            }
+        }
+        $page = $event->object;
+        if(!$page instanceof Page || ($page->template && $page->template->name === 'admin')) return;
+
+        $name = $this->getHoneypotFieldName();
+        $nameAttr = htmlspecialchars($name, ENT_QUOTES, 'UTF-8');
+        $skip = $this->getHoneypotSkipForms();
+        $hide = 'position:absolute!important;left:-10000px!important;top:auto!important;width:1px!important;height:1px!important;overflow:hidden!important;';
+        $field = '<div class="pwna-hpf" style="' . $hide . '" aria-hidden="true">'
+            . '<label>Leave this field empty <input type="text" name="' . $nameAttr . '" value="" tabindex="-1" autocomplete="off" data-pwna-hp="1"></label>'
+            . '<input type="hidden" name="' . $nameAttr . '_s" value="" data-pwna-hp-sid="1">'
+            . '</div>';
+
+        $count = 0;
+        $out = preg_replace_callback('~<form\b([^>]*)>(?!\s*<div class="pwna-hpf")~i', function($m) use ($field, $skip, &$count) {
+            $attrs = $m[1];
+            if(!preg_match('~\bmethod\s*=\s*["\']?\s*post\b~i', $attrs)) return $m[0];
+            if(stripos($attrs, 'data-pwna-no-honeypot') !== false) return $m[0];
+            if($skip && preg_match('~\bid\s*=\s*["\']?([^"\'\s>]+)~i', $attrs, $idm) && isset($skip[$idm[1]])) return $m[0];
+            $count++;
+            return $m[0] . $field;
+        }, $html);
+        if($out === null || !$count) return;
+
+        // CSS class backup for strict CSPs that block inline style attributes.
+        $nonce = $this->getCspNonce();
+        $nonceAttr = $nonce !== '' ? ' nonce="' . htmlspecialchars($nonce, ENT_QUOTES, 'UTF-8') . '"' : '';
+        $style = '<style' . $nonceAttr . '>.pwna-hpf{' . $hide . '}</style>';
+        $out = preg_match('~</head>~i', $out) ? preg_replace('~</head>~i', $style . '</head>', $out, 1) : $style . $out;
+        $event->return = $out;
+    }
+
+    // ------------------------------------------------------------------
+    // Developer hooks
+    // ------------------------------------------------------------------
+    //
+    // Attach these in site/init.php (or an autoload module's init()) to cover
+    // every context. Tracking beacons are answered before site/ready.php runs,
+    // so hooks added there apply only to server-side tracking, tracker
+    // injection and the honeypot.
+
+    /**
+     * Hook: decide whether a page request is tracked.
+     *
+     * Runs after all built-in checks passed. Return false to skip tracking.
+     * $context is 'server' (server-side pageview) or 'tracker' (JS tracker injection).
+     *
+     *   $wire->addHookAfter('NativeAnalytics::shouldTrack', function(HookEvent $e) {
+     *       if($e->arguments(0)->template == 'landing-test') $e->return = false;
+     *   });
+     *
+     * @param Page $page
+     * @param string $context
+     * @return bool
+     */
+    public function ___shouldTrack(Page $page, $context = 'server') {
+        return true;
+    }
+
+    /**
+     * Hook: inspect or modify a pageview row before it is stored.
+     *
+     * Return the (modified) row array, or false to discard the hit. Column names
+     * match the pwna_hits table; do not add unknown columns.
+     * $context is 'server' or 'tracker'.
+     *
+     * @param array $row
+     * @param string $context
+     * @return array|false
+     */
+    public function ___beforeSaveHit(array $row, $context = 'server') {
+        return $row;
+    }
+
+    /**
+     * Hook: inspect or modify an event row before it is stored.
+     * Return the (modified) row array, or false to discard the event.
+     *
+     * @param array $row
+     * @return array|false
+     */
+    public function ___beforeSaveEvent(array $row) {
+        return $row;
+    }
+
+    /**
+     * Hook: called when the form honeypot catches a submission.
+     *
+     * $sessionHashes are the sessions that were flagged. Hook after to log,
+     * notify or block. Set $event->return = 'block' to stop the request with
+     * HTTP 403, or 'allow' to let it through, regardless of the module setting.
+     *
+     * @param array $sessionHashes
+     * @param string $action Configured action: 'flag' or 'block'.
+     * @return string 'flag' or 'block'
+     */
+    public function ___honeypotTriggered(array $sessionHashes, $action = 'flag') {
+        return $action;
+    }
+
+    protected function callShouldTrack(Page $page, $context) {
+        try {
+            return $this->shouldTrack($page, $context) !== false;
+        } catch(\Throwable $e) {
+            $this->wire('log')->save('native-analytics', 'shouldTrack hook failed: ' . $e->getMessage());
+            return true;
+        }
+    }
+
+    /**
+     * @return array|null Row to store, or null when a hook discarded it.
+     */
+    protected function callBeforeSaveHit(array $row, $context) {
+        return $this->applyRowHook('beforeSaveHit', $row, $context);
+    }
+
+    protected function callBeforeSaveEvent(array $row) {
+        return $this->applyRowHook('beforeSaveEvent', $row);
+    }
+
+    protected function applyRowHook($method, array $row, $context = null) {
+        try {
+            $result = $context === null ? $this->$method($row) : $this->$method($row, $context);
+        } catch(\Throwable $e) {
+            $this->wire('log')->save('native-analytics', $method . ' hook failed: ' . $e->getMessage());
+            return $row;
+        }
+        if($result === false) return null;
+        if(!is_array($result)) return $row;
+        // Never let a hook add columns the table does not have.
+        return array_intersect_key($result, $row) + $row;
+    }
+
 
     protected function hashValue($value) {
         return hash('sha256', $this->hashSalt . '|' . (string) $value);

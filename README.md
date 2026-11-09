@@ -1,10 +1,10 @@
-NativeAnalytics 1.0.36
+NativeAnalytics 1.0.37
 
 # NativeAnalytics
 
 Native first-party analytics module for ProcessWire CMS. It tracks traffic and engagement directly inside ProcessWire, without Google Analytics or external APIs.
 
-## Features in v1.0.36
+## Features in v1.0.37
 
 NativeAnalytics is a first-party analytics dashboard for ProcessWire. It keeps the tracking data inside your ProcessWire installation and does not rely on Google Analytics, external tracking scripts or remote analytics APIs.
 
@@ -23,7 +23,12 @@ Main features currently included:
 - Optional custom URL/path filter for site-specific tracking exclusions
 - Maintenance tools for data cleanup, including **Cleanup resolvable 404s** and **Cleanup suspicious probes**
 - IP blocklist support and quick blocking from the Current visitors panel
-- Overview, Engagement, Goals, Compare, Sources and System tabs
+- Spoof-proof visitor IP detection (Cloudflare and trusted proxies only)
+- Optional form spam honeypot that flags (or blocks) spam submissions in FormBuilder, LoginRegister and custom forms
+- Overview, Engagement, Goals, Funnel, Compare, Sources, Content and System tabs
+- Content insights: declining and growing pages, and published pages without visits
+- Bot traffic report by detection reason
+- Developer hooks: `shouldTrack`, `beforeSaveHit`, `beforeSaveEvent`, `honeypotTriggered`
 - Compare mode for previous period and same period last year
 - Event tracking for forms, downloads, contact links, outbound links and custom CTA events
 - Goal tracking with event-based and page/path-based goals
@@ -253,6 +258,44 @@ Thanks to **[adrianbj](https://github.com/adrianbj)** for all five improvements 
 
 - **Fixed the tracking endpoint being recorded as a pageview.** On some setups (ProcessWire installed in a subdirectory, behind a reverse proxy, or where the `/pwna-track/` request was not recognised as the analytics endpoint) the endpoint's own path could leak into stored hits. The result was that **Top pages**, **Top landing pages** and **Top exit pages** all showed only `/pwna-track/`, with sessions started equal to sessions ended. A new `isEndpointPath()` guard now hard-excludes `/pwna-track/` and `/pwna-realtime/` from being stored as a pageview or event, and the `getRequestPathForStorage()` fallback can no longer return an endpoint path. Existing `/pwna-track/` rows can be cleaned up via the suspicious-path removal tool.
 - Updated module version metadata to `1.0.27` / integer `1027`.
+
+## 1.0.37 notes
+
+### Security — visitor IP can no longer be spoofed
+- Previously the visitor IP was taken from `CF-Connecting-IP` / `X-Forwarded-For` whenever present. Any client could send these headers to bypass the IP blocklist, evade the "single IP" bot rule and pollute cookie-less visitor counts.
+- New setting **Filters & exclusions → Visitor IP source**:
+  - **Automatic** (default): `CF-Connecting-IP` is trusted only from Cloudflare's published edge ranges; `X-Forwarded-For` only from private/loopback peers (local reverse proxy, Docker) or addresses listed in **Trusted proxies** (IPs or CIDR, IPv4/IPv6). The forwarding chain is read from the right, so a forged left-most value is ignored.
+  - **Direct connection only**: never trust forwarding headers.
+  - **Legacy**: previous behaviour, for hosts whose proxy IPs cannot be listed (not recommended).
+- The settings page shows the IP detected for your own request and warns when forwarding headers arrive from an untrusted peer (typically an unlisted hosting load balancer — add it to Trusted proxies).
+
+### Tracking integrity — verified beacon path and title (PR #24 by adrianbj)
+- A forged tracking beacon can no longer pin a made-up path or title on a real page. The path must be the page's own path (in any language); extra URL segments or a page number are accepted only when the page's template enables URL segments or pagination. The title must be one of the page's own titles (in any language), otherwise the current title is used.
+- Unpublished pages and pages under the admin tree (users, roles, permissions, repeater items) are dropped like admin pages already were.
+- A path that does not belong to the page drops the page attribution rather than the whole beacon, so pages served at other URLs (URL hooks) are still counted. The 404 page is exempt from the path check, but a beacon claiming it with a non-404 status is ignored.
+
+### Form spam honeypot
+- New **Form spam protection** settings group. When enabled, an invisible field is added to every front-end POST form (FormBuilder, LoginRegister, custom forms). A filled honeypot flags the visitor's analytics session as a bot (reason `honeypot`) via `markSessionHashAsBot()`, catching multi-page form spam that behavioural rules cannot.
+- Actions: **flag only** (default; the form still processes) or **flag and stop the submission** (HTTP 403 before any form processing).
+- Per-site automatic field name (configurable), opt-out per form with `data-pwna-no-honeypot` or by form id, never applied to superusers, never touches non-HTML responses. Works in every tracking mode; the JS tracker passes its session id so the right session is flagged.
+
+### Developer hooks
+- `NativeAnalytics::shouldTrack(Page $page, $context)` — return false to skip tracking a page (`server` or `tracker` context).
+- `NativeAnalytics::beforeSaveHit(array $row, $context)` — modify a pageview row or return false to discard it.
+- `NativeAnalytics::beforeSaveEvent(array $row)` — same for events.
+- `NativeAnalytics::honeypotTriggered(array $sessionHashes, $action)` — react to caught spam; return `block` or `allow` to override the configured action.
+- Hook failures are logged and never break tracking; hooks cannot add unknown columns.
+- Attach hooks in `site/init.php` (or an autoload module's `init()`) to cover everything. Tracking beacons (`beforeSaveHit` with context `tracker`, `beforeSaveEvent`) are answered before `site/ready.php` runs, so hooks added there only apply to server-side tracking, tracker injection and the honeypot.
+- Request handling now runs at later boot points (beacons before `ProcessPageView::execute`, page requests after `ProcessPageView::ready`) instead of in the module's `init()`/`ready()`, so these hooks are in place when needed. Beacons still skip other modules' `ready()` and stay lightweight.
+
+### Dashboard
+- New **Content** tab: **Declining pages** and **Growing pages** (selected period vs. the previous period of equal length, min. 10 views) and **Pages without visits** (published, viewable pages created before the period that got no visits, with edit links). Based on daily aggregates, so it also works beyond raw-hit retention; respects the template filter and excluded paths.
+- New **Bot traffic** panel on the System tab: flagged pageviews, sessions and events by detection reason, with the bot share of recorded traffic.
+
+### Admin UI
+- Restyled the **Bot detection** status notice in module settings to match the admin theme. It now inherits the theme's text colour with neutral translucent tints, so it fits AdminThemeUikit, Konkat and dark themes alike. Only the left accent bar and status icon are coloured (theme main colour for OK states, amber for warnings), so it stays visible without looking out of place.
+
+- Updated NativeAnalytics and dashboard version metadata consistently to `1.0.37` / integer `1037`.
 
 ## 1.0.36 notes
 

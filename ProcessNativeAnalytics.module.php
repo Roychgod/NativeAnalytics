@@ -6,7 +6,7 @@ class ProcessNativeAnalytics extends Process {
         return [
             'title' => 'NativeAnalytics Dashboard',
             'summary' => 'Dashboard for the NativeAnalytics module.',
-            'version' => 1036,
+            'version' => 1037,
             'author' => 'Pyxios - Roych (www.pyxios.com)',
             'permission' => 'nativeanalytics-view',
             'icon' => 'area-chart',
@@ -316,12 +316,17 @@ public function ___execute() {
     $sourcesContent .= $this->renderSimpleTable('404 pages', ['Missing path', 'Hits', 'Unique visitors'], $this->map404Rows($top404), true);
     $sourcesContent .= '</div>';
 
+    $contentFilters = $template !== '' ? ['template' => $template] : [];
+    $contentContent = $this->renderToolbar($rangeMeta, $pageId, $template, $templates, 'content');
+    $contentContent .= $this->renderContentInsights($analytics, $rangeSpec, $contentFilters);
+
     $techContent = $this->renderToolbar($rangeMeta, $pageId, $template, $templates, 'tech');
     $techContent .= '<div class="pwna-grid-3">';
     $techContent .= $this->renderSimpleTable('Browsers', ['Browser', 'Views'], $this->mapGenericRows($browsers));
     $techContent .= $this->renderSimpleTable('Devices', ['Device', 'Views'], $this->mapGenericRows($devices));
     $techContent .= $this->renderSimpleTable('Operating systems', ['OS', 'Views'], $this->mapGenericRows($os));
     $techContent .= '</div>';
+    $techContent .= $this->renderBotTrafficPanel($analytics->getBotTrafficByReason($rangeSpec));
     if($this->user->hasPermission('nativeanalytics-manage')) {
         $techContent .= $this->renderManageActions();
         $techContent .= $this->renderHealthPanel($health);
@@ -335,6 +340,7 @@ public function ___execute() {
         'funnel' => $funnelContent,
         'compare' => $compareContent,
         'sources' => $sourcesContent,
+        'content' => $contentContent,
         'tech' => $techContent,
     ]);
     if(!isset($tabContent[$activeTab])) {
@@ -1312,6 +1318,7 @@ public function ___getTabLabels() {
         'funnel' => 'Funnel',
         'compare' => 'Compare',
         'sources' => 'Sources',
+        'content' => 'Content',
         'tech' => 'System',
     ];
 }
@@ -2392,6 +2399,81 @@ HTML;
 </script>
 HTML;
         return str_replace('__PWNA_NONCE__', $nonce, $script);
+    }
+
+    /**
+     * Content tab: declining / growing pages and pages nobody visited.
+     */
+    protected function renderContentInsights(NativeAnalytics $analytics, $rangeSpec, array $filters) {
+        $declining = $analytics->getPageTrends($rangeSpec, 'down', 15, 10, $filters);
+        $growing = $analytics->getPageTrends($rangeSpec, 'up', 15, 10, $filters);
+        $unvisited = $analytics->getPagesWithoutVisits($rangeSpec, 50, $filters);
+
+        $out = '<div class="pwna-panel"><h2>Content insights</h2><p class="pwna-note">'
+            . 'Compares the selected period with the previous period of the same length, and lists published pages that got no visits. '
+            . 'Pages need at least 10 views in the busier period to appear in the trend tables. Bot traffic is excluded.</p></div>';
+        $out .= '<div class="pwna-grid-2">';
+        $out .= $this->renderSimpleTable('Declining pages', ['Page', 'Previous', 'Current', 'Change'], $this->mapTrendRows($declining), true);
+        $out .= $this->renderSimpleTable('Growing pages', ['Page', 'Previous', 'Current', 'Change'], $this->mapTrendRows($growing), true);
+        $out .= '</div>';
+
+        $title = 'Pages without visits';
+        $note = $unvisited['total'] > 0
+            ? number_format($unvisited['total']) . ' of ' . number_format($unvisited['checked']) . ' published pages had no visits in this period'
+                . ($unvisited['total'] > count($unvisited['rows']) ? ' (showing the ' . count($unvisited['rows']) . ' most recently modified)' : '') . '.'
+            : 'Every published page created before this period was visited at least once.';
+        if($unvisited['capped']) $note .= ' Only the 5,000 most recently modified pages were checked.';
+        $note .= ' Candidates to update, link better, merge or retire. Pages created during the period are not listed.';
+
+        $rows = [];
+        foreach($unvisited['rows'] as $row) {
+            $label = '<strong>' . $this->sanitizer->entities(strip_tags((string) $row['page_title'])) . '</strong><br><span class="pwna-muted">' . $this->sanitizer->entities((string) $row['path']) . '</span>';
+            $edit = $row['edit_url'] !== '' ? '<a href="' . $this->sanitizer->entities($row['edit_url']) . '">Edit</a>' : '';
+            $rows[] = [$label, $this->sanitizer->entities((string) $row['template']), $this->sanitizer->entities($this->formatDate($analytics, $row['modified'])), $edit];
+        }
+        $table = $this->renderSimpleTable($title, ['Page', 'Template', 'Last modified', ''], $rows, true);
+        // Inject the explanatory note under the heading.
+        $out .= preg_replace('~</h2>~', '</h2><p class="pwna-note">' . $this->sanitizer->entities($note) . '</p>', $table, 1);
+        return $out;
+    }
+
+    protected function mapTrendRows(array $rows) {
+        $mapped = [];
+        foreach($rows as $row) {
+            $label = $this->sanitizer->entities((string) $row['path']);
+            if(!empty($row['page_title'])) {
+                $label = '<strong>' . $this->sanitizer->entities(strip_tags((string) $row['page_title'])) . '</strong><br><span class="pwna-muted">' . $this->sanitizer->entities((string) $row['path']) . '</span>';
+            }
+            $pct = $row['change_pct'];
+            $change = $pct === null ? 'new' : (($pct > 0 ? '+' : '') . number_format((float) $pct, 1) . ' %');
+            $mapped[] = [$label, number_format((int) $row['previous']), number_format((int) $row['current']), $this->sanitizer->entities($change)];
+        }
+        return $mapped;
+    }
+
+    /**
+     * System tab: bot-flagged traffic by detection reason.
+     */
+    protected function renderBotTrafficPanel(array $report) {
+        $botHits = (int) ($report['bot_hits'] ?? 0);
+        $humanHits = (int) ($report['human_hits'] ?? 0);
+        $total = $botHits + $humanHits;
+        $share = $total > 0 ? round($botHits / $total * 100, 1) : 0;
+
+        $rows = [];
+        foreach($report['rows'] ?? [] as $r) {
+            $rows[] = [
+                $this->sanitizer->entities((string) $r['label']) . ($r['reason'] !== '' ? ' <span class="pwna-muted">' . $this->sanitizer->entities((string) $r['reason']) . '</span>' : ''),
+                number_format((int) $r['hits']),
+                number_format((int) $r['sessions']),
+                number_format((int) $r['events']),
+            ];
+        }
+        $table = $this->renderSimpleTable('Bot traffic', ['Detection reason', 'Pageviews', 'Sessions', 'Events'], $rows);
+        $note = $botHits > 0
+            ? number_format($botHits) . ' flagged pageviews in this period (' . $share . ' % of recorded pageviews). These are kept for review but excluded from all reports.'
+            : 'No flagged bot traffic in this period. Known crawlers are filtered before they are recorded and are not counted here.';
+        return preg_replace('~</h2>~', '</h2><p class="pwna-note">' . $this->sanitizer->entities($note) . '</p>', $table, 1);
     }
 
     protected function mapTopPages(array $rows) {

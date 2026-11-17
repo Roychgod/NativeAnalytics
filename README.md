@@ -1,452 +1,50 @@
-NativeAnalytics 1.0.38
-
 # NativeAnalytics
 
-Native first-party analytics module for ProcessWire CMS. It tracks traffic and engagement directly inside ProcessWire, without Google Analytics or external APIs.
+First-party analytics for ProcessWire. All tracking data stays in your own database: no Google Analytics, no external scripts, no remote APIs.
 
-## Features in v1.0.38
+**Current version: 1.0.38** · [Changelog](https://github.com/Roychgod/NativeAnalytics/blob/main/CHANGELOG.md) · [Forum thread](https://processwire.com/talk/topic/31808-native-analytics-%E2%80%94-a-native-analytics-module-for-processwire/)
 
-NativeAnalytics is a first-party analytics dashboard for ProcessWire. It keeps the tracking data inside your ProcessWire installation and does not rely on Google Analytics, external tracking scripts or remote analytics APIs.
+## Features
 
-Main features currently included:
+- **Traffic:** page views, unique visitors, sessions, current visitors, top/landing/exit pages, browsers, devices, OS
+- **Acquisition:** referrers, UTM campaigns, first-touch channel attribution (Direct, Organic, Social, Referral, Paid, Email…)
+- **Engagement:** events for forms, downloads, contact and outbound links, custom CTAs, plus internal site search terms
+- **Goals and funnels:** event or path goals, conversion rates, multi-step funnels with drop-off
+- **Compare:** previous period or same period last year
+- **Content insights:** growing and declining pages, published pages without visits, smart 404 report
+- **Bot filtering:** AI crawlers, SEO bots, scanners and probe URLs, optional Matomo device-detector, IP blocklist
+- **Privacy:** cookie-less mode, consent gate, PrivacyWire helper, respects GPC and Do Not Track
+- **Reports:** CSV, PDF and DOCX exports, optional monthly email reports
+- **Admin:** dashboard with tabs, per-page stats in the page editor, data retention and cleanup tools
+- **Developers:** hooks `shouldTrack`, `beforeSaveHit`, `beforeSaveEvent`, `honeypotTriggered`, optional form spam honeypot
 
-- Page views, unique visitors, sessions and current visitors
-- Top pages, landing pages, exit pages, referrers and UTM campaign reporting
-- First-touch session attribution with acquisition channel breakdown (Direct, Organic Search, Social, Referral, Paid, Email, Affiliate, Campaign)
-- Conversion funnel tab with mixed page-path and event steps, per-step drop-off and overall completion rate
-- Browser, device and operating-system breakdowns
-- Internal search-term tracking via configurable query parameters (`q`, `s`, `search` by default)
-- Smarter 404 reporting with support for redirect/history modules, so renamed pages and redirected URLs do not stay listed as real 404s
-- Improved bot and crawler filtering, including AI crawlers, SEO bots, social preview bots, uptime monitors and common HTTP libraries
-- Optional Matomo `device-detector` support with automatic Composer detection and bundled fallback
-- Suspicious probe detection for common scanner URLs, CMS/admin probes, `.env`, `.git`, config leaks, shell upload attempts and similar noise
-- Optional custom URL/path filter for site-specific tracking exclusions
-- Maintenance tools for data cleanup, including **Cleanup resolvable 404s** and **Cleanup suspicious probes**
-- IP blocklist support and quick blocking from the Current visitors panel
-- Spoof-proof visitor IP detection (Cloudflare and trusted proxies only)
-- Optional form spam honeypot that flags (or blocks) spam submissions in FormBuilder, LoginRegister and custom forms
-- Overview, Engagement, Goals, Funnel, Compare, Sources, Content and System tabs
-- Content insights: declining and growing pages, and published pages without visits
-- Bot traffic report by detection reason
-- Developer hooks: `shouldTrack`, `beforeSaveHit`, `beforeSaveEvent`, `honeypotTriggered`
-- Compare mode for previous period and same period last year
-- Event tracking for forms, downloads, contact links, outbound links and custom CTA events
-- Goal tracking with event-based and page/path-based goals
-- Conversion rates based on sessions or unique visitors
-- Event and goal daily aggregates for high-traffic retention workflows
-- Tracking helper with copy-ready snippets and a mini snippet generator
-- Per-page mini analytics box inside `ProcessPageEdit`
-- CSV, PDF and DOCX exports
-- Optional monthly email reports with configurable recipients, report sections (including acquisition channels) and PDF attachment
-- Server-side pageview tracking with optional event JS tracking, bot filtering and optional consent cookie gate
-- Respects browser opt-out signals: Global Privacy Control (`Sec-GPC`) and legacy Do Not Track
-- Cookie-less visitor/session storage mode for EU/privacy-focused sites
-- PrivacyWire localStorage consent helper
-- Cleaner, grouped module settings with collapsible sections for tracking, filters, bot detection, privacy/consent, retention, reports and advanced options
-- Data retention with automatic daily cleanup, disk-space reclaim (OPTIMIZE TABLE), a storage-status panel and manual purge/reclaim buttons
-- Configurable dashboard auto-refresh that pauses while the browser tab is hidden, with a live-status indicator
+## Requirements
+
+- ProcessWire 3.0.173+
+- PHP 7.4+
+- LazyCron (core module)
+- `ZipArchive` for DOCX export
 
 ## Installation
 
-1. Copy the `NativeAnalytics` folder to `/site/modules/`
-2. In ProcessWire admin, go to **Modules > Refresh**
-3. Install **NativeAnalytics**
-4. Install **NativeAnalytics Dashboard**
-5. Open **Admin > Analytics**
-6. Configure the module under **Modules > Configure > NativeAnalytics**
+1. Copy the `NativeAnalytics` folder to `/site/modules/`.
+2. **Modules → Refresh**, then install **NativeAnalytics** (the dashboard installs with it).
+3. Open **Admin → Analytics**. Settings are under **Modules → Configure → NativeAnalytics**.
 
-## Upgrade notes
+## Upgrading
 
-- Refreshing the module is usually enough after replacing the folder.
-- New schema elements are created automatically on the next request.
-- DOCX export requires PHP `ZipArchive` support.
+Replace the module folder and run **Modules → Refresh**. Database changes are applied automatically.
 
-## Current scope
+## Latest release: 1.0.38
 
-This version already covers the core analytics needs for most ProcessWire sites:
+Security update, reported privately by Adrian (adrianbj). Thank you!
 
-- traffic overview
-- period comparison
-- source analysis
-- engagement/event tracking
-- exportable reports
-- helper tools for custom tracked CTAs
-- basic goal/conversion tracking
+- Tracking endpoint refuses requests over 8 KB, and event extra data is capped at 2 KB.
+- New setting: max tracking requests per IP per minute (default 240, 0 disables).
+- CSV exports are protected against formula injection in Excel and Google Sheets.
 
-## Optional future upgrades
+Full history: [CHANGELOG.md](https://github.com/Roychgod/NativeAnalytics/blob/main/CHANGELOG.md)
 
-- Funnel reports chained across multiple goals
-- Alerts for traffic spikes or drops
-- Page-level engagement score
-- Multi-site analytics (per-site dashboards inside a multi-site ProcessWire install)
+---
 
-Enjoy — [Pyxios](https://www.pyxios.com)
-
-
-## Upgrade note
-
-This release is renamed to **NativeAnalytics** and is intended as a fresh install. Uninstall older PW Native Analytics versions before installing this one.
-
-## 1.0.10 notes
-
-- Added cookie-less visitor/session storage mode. In this mode NativeAnalytics does not set `pwna_vid` / `pwna_sid` cookies and the tracker does not create browser-storage visitor IDs. Unique visitor and session counts are approximate because they are derived server-side from a short-lived request fingerprint.
-- Added PrivacyWire localStorage consent helper settings. When enabled together with “Require consent cookie”, NativeAnalytics can read the PrivacyWire localStorage consent object, set/unset the configured NativeAnalytics consent cookie, and track the current page once consent is granted.
-- Added `window.PWNA.trackIfConsented()`, `window.PWNA.setConsent()`, `window.PWNA.clearConsent()` and `window.PWNA.syncPrivacyWireConsent()` helper methods for custom consent integrations.
-- Event-tracking and other tracking-related module settings are hidden when global tracking is disabled.
-- Admin dashboard CSS has been restored to the 1.0.8 look; no forced border-radius override is applied.
-
-## 1.0.11 notes
-
-- Removed border-radius across the dashboard UI for a flat, squared look (cards, panels, tabs, buttons, inputs, code blocks, tooltips, badges, charts).
-- Active sub-tab and active WireTab now have a transparent bottom border, so the active tab visually merges with the panel below instead of showing a stray bottom line.
-- Inline CSS fallback automatically picks up the new admin.css, no extra steps needed.
-
-## 1.0.12 notes
-
-- Hardened the active-tab bottom-border fix. The previous CSS only neutralised `border-bottom-color`, which still left a visible line in some admin themes (AdminThemeUikit, jQuery UI variants, anchors with `uk-active` / `aria-selected="true"`).
-- New rules now also strip `border-bottom`, `box-shadow` and `outline` from the active `<li>` and its inner `<a>`, and explicitly cover all known active-state classes (`ui-tabs-active`, `ui-state-active`, `uk-active`, `on`, `aria-selected="true"`).
-- The fallback `.pwna-tab.is-active` (pill nav rendered when JqueryWireTabs is unavailable) also loses its bottom edge when active.
-
-## 1.0.13 notes
-
-- WireTabs now use a deterministic, theme-agnostic style that looks identical across AdminThemeDefault, AdminThemeReno and AdminThemeUikit: visible top / left / right borders on every tab, light grey background on inactive tabs, white background on the active tab, and a transparent bottom border on the active tab so it merges with the panel below.
-- Added a horizontal baseline (1px bottom border on the `<ul>` itself) and a `-1px` negative margin on each `<li>`, so the active tab cleanly cuts through that baseline — the classic "folder tab" look, but flat (no rounded corners).
-- Compare tab: added `margin-top: 16px` to any `.pwna-panel` that directly follows another `.pwna-panel`. Previously the toolbar panel and the "Compare periods" panel sat flush against each other; now there is consistent spacing wherever two panels stack vertically.
-
-## 1.0.14 notes
-
-- Added a "Module settings" shortcut button on the right side of the brand header (with a cog icon). One-click access to **Modules → NativeAnalytics → Configure**, no more navigating through the modules list.
-- The shortcut is shown only to users who can manage modules (superuser or the `module-admin` permission), so editor-only roles do not see it.
-
-## 1.0.15 notes
-
-- Fixed an overlap in AdminThemeDefault where the WireTabs strip could render over the brand header (NativeAnalytics title + version + Donate + Module settings shortcut).
-- The brand panel now creates its own stacking context with `position: relative` and `z-index: 10`, so the tabs (`z-index: 1`) can never paint over it regardless of admin theme.
-- Increased the brand panel `margin-bottom` from 12px to 20px, giving the WireTabs strip extra clearance below the brand header in every theme.
-
-## 1.0.16 notes
-
-- Definitive fix for the AdminThemeDefault tab/brand spacing issue. In 1.0.15 the WireTabs strip still rendered visually flush against the bottom edge of the brand panel because Default-theme CSS overrode the `<ul>` margin even with `!important`, and parent margin collapse ate the gap.
-- New strategy: spacing is now carried by the `.pwna-wiretabs` wrapper `<div>` (`margin-top: 16px !important` + `padding-top: 8px !important` + `clear: both`), not by the inner `<ul>`. Padding cannot be collapsed or overridden by sibling rules, so the gap is guaranteed.
-- Brand `margin-bottom` raised to 24px (with `!important`), so worst-case total clearance is at least 32px in every admin theme.
-
-## 1.0.17 notes
-
-- Aligned grid panels by their top edge. In `pwna-grid-2` and `pwna-grid-3`, side-by-side panels (e.g. Browsers / Devices / Operating systems on the System tab) now have their headers on the same horizontal line — previously panels with less content could appear vertically offset because the default `align-items: stretch` stretched them to equal heights and the inner content drifted.
-- Added `align-items: start` on the grid and `align-self: start` on the panels, so each panel uses its natural height and starts at the top of its row.
-
-## 1.0.18 notes
-
-- Reverted the 1.0.17 approach. Side-by-side panels in `pwna-grid-2` / `pwna-grid-3` (Traffic trend / Traffic by hour, Top pages / Current visitors, Browsers / Devices / OS, etc.) now share equal heights again — `align-items: stretch` is back, so each row of panels has matching top and bottom edges.
-- To prevent inner content from drifting to the middle of a stretched panel, grid children now use `display: flex; flex-direction: column; height: 100%` — headers and tables stay anchored to the top of the panel; the panel itself stretches to match its neighbour's height.
-
-## 1.0.19 notes
-
-- Fixed the real reason side-by-side panels looked vertically offset in 1.0.13–1.0.18. The `.pwna-panel + .pwna-panel { margin-top: 16px }` rule introduced in 1.0.13 (for the Compare tab) leaked into grid layouts too: every second panel inside `pwna-grid-2` / `pwna-grid-3` was getting an extra 16px top margin inside the stretched grid cell, pushing its content down so the headers no longer lined up.
-- The sibling-margin rule is now scoped: it applies only to panels that are *not* direct children of `pwna-grid-2` / `pwna-grid-3`. Inside grids, the grid `gap` already provides horizontal spacing, so no extra vertical margin is needed.
-
-
-- Improved the compact page-level analytics box shown inside ProcessPageEdit.
-- The page edit analytics summary now uses a small responsive card grid instead of plain stacked text.
-- The admin CSS is explicitly loaded for the page edit analytics box, so the mini summary is styled correctly outside the main analytics dashboard.
-
-## 1.0.20 notes
-
-- Added optional monthly email reports.
-- Reports are sent once per month for the previous calendar month via ProcessWire/WireMail.
-- Module settings now include report recipients, send day of month, optional sender email and section toggles for top pages, referrers and engagement events.
-- Added **Send test report now** for manually testing report delivery from module settings.
-- Added **Report preview**, so admins can view the monthly report directly in the module settings before sending it.
-- Test/preview reports use the previous calendar month when data exists, and automatically fall back to current month-to-date if the previous month has no data yet.
-- Test reports are clearly marked as `[TEST]` and do not update the last sent month marker.
-
-- Added optional PDF attachment for monthly reports, enabled by default.
-- Test reports and scheduled reports can now include a clean PDF version of the same analytics summary.
-- Report event targets now avoid full external URLs in the email body to prevent email clients from showing unrelated rich link previews, for example YouTube previews.
-- Module info version now uses an integer version value (`1020`) so the ProcessWire modules directory / Upgrade module can detect the version reliably.
-
-- Improved the PDF report layout and made PDF text handling more robust for special characters and punctuation.
-- Added a setting to hide/show the compact page analytics summary in ProcessPageEdit.
-- Improved spacing above the Page Edit analytics summary and made the “Open full analytics” button behave more like a native ProcessWire admin button.
-- Hardened inline JavaScript JSON output to avoid unsafe `</script>` edge cases in page titles or other dynamic values.
-
-
-## 1.0.21 notes
-
-- Added a dedicated **Goals** tab for tracking meaningful conversions directly inside ProcessWire.
-- Goals can be based on tracked engagement events, such as form submits, downloads, phone/email clicks, outbound/custom CTA clicks, or on page/path rules such as thank-you and confirmation pages.
-- Added conversion-rate reporting based on either sessions or unique visitors.
-- Added Goals overview cards, a goal trend chart, and a goals/conversion-rate table.
-- Added a guided Goal setup panel with helper text, quick setup presets, recent tracked event selection, recent page/path selection, and editable datalist suggestions for event groups, event names, labels, targets and paths.
-- Improved the Goals empty states so new installs do not show a large empty chart before goals or conversions exist.
-- Added new aggregate tables for event and goal reporting: `pwna_event_daily` and `pwna_goal_daily`.
-- Added goal definition storage in `pwna_goals`.
-- Added raw event retention settings and a high-traffic helper option for aggregate-first maintenance workflows.
-- Added extra composite indexes for larger datasets and more efficient filtered reporting.
-- Daily and hourly maintenance now rebuilds traffic, event and goal aggregates.
-- Maintenance actions now include raw event purging, and analytics reset now clears hit/event/session/aggregate data while keeping configured goal definitions.
-- Fixed the Goal trend chart so it plots goal completions correctly, while still showing unique visitors and sessions in the tooltip.
-- Fixed chart x-axis labels so long date/time labels remain fully visible on the right edge of all SVG charts.
-- Updated module version metadata to `1.0.21` / integer `1021` for both NativeAnalytics and the dashboard process module.
-
-## 1.0.22 notes
-
-- Added CSP nonce support for NativeAnalytics frontend and admin script tags.
-- NativeAnalytics now reuses an existing nonce from `$config->cspNonce`, `$config->cspNonce()` or the current `Content-Security-Policy` / `Content-Security-Policy-Report-Only` header when available.
-- Sites without a CSP nonce continue to render normal script tags, so this change is backwards compatible.
-- Hardened admin inline script rendering so JavaScript variables such as jQuery `$root`, `$links` and `$link` are not interpreted as PHP variables before output.
-- Updated module version metadata to `1.0.22` / integer `1022` for both NativeAnalytics and the dashboard process module.
-
-## 1.0.23 notes
-
-- Theme-adaptive dashboard styling: the admin UI now natively follows the active ProcessWire admin theme via Konkat `--pw-*` CSS custom properties.
-- Automatic light/dark mode support — panels, tables, charts, filters, tooltips, sub-tabs and helper popups all adapt to the active color scheme.
-- Status colors (Danger zone, success buttons, deltas) now use a dedicated `light-dark()` palette with proper contrast in both modes.
-- Fixed solid-color buttons (delete, quick-link) so their label text remains readable on dark backgrounds.
-- Added `.pwna-app` wrapper around the dashboard output for cleaner CSS scoping.
-- Refactored ~175 hardcoded color values in `admin.css` to CSS custom properties.
-- Updated module version metadata to `1.0.23` / integer `1023` for both NativeAnalytics and the dashboard process module.
-
-## 1.0.24 notes
-
-This release mainly focuses on cleaner analytics data, better bot/noise filtering and a more understandable configuration screen.
-
-- Added smarter 404 handling. NativeAnalytics now checks whether a requested path can be resolved by redirect/history modules before treating it as a real 404.
-- Added support for common redirect/history modules: PagePathHistory, ProcessRedirects and Jumplinks.
-- The 404 pages section now excludes paths that already resolve through one of these modules, so renamed pages and valid redirects no longer stay listed as broken URLs.
-- Added the **Cleanup resolvable 404s** maintenance action. This can retroactively remove old 404 records whose URLs now resolve correctly through redirects.
-- Expanded bot and crawler detection for modern AI crawlers, SEO bots, social previewers, uptime monitors, common HTTP libraries and automated requests.
-- Added optional Matomo `device-detector` support for more reliable bot/device detection.
-- NativeAnalytics first checks for a site-wide Composer installation of Matomo Device Detector and then falls back to the bundled library included with the module.
-- Added a clearer bot-detection status in module settings, including which detector source is being used and whether the bundled library appears available.
-- Added suspicious probe detection for common scanner URLs, including WordPress/Joomla/Drupal/Magento/admin/login probes, `.env`, `.git`, config files, shell upload attempts, path traversal attempts and similar noise.
-- Added the **Cleanup suspicious probes** maintenance action for removing already-recorded scanner/probe hits from the analytics database.
-- Added an optional custom URL/path filter for project-specific exclusions. This is useful when a site has its own noisy paths or patterns that should not be tracked.
-- Added IP blocklist support and a **Block this IP** action in the Current visitors panel.
-- Improved realtime/current visitor filtering so likely bots, probes and blocked IPs are hidden from the live visitor view.
-- Reorganized the module settings screen into clearer grouped/collapsible sections for tracking, filters, bot detection, privacy/consent, retention, reports and advanced options.
-- Improved bundled library fallback handling and admin status messages around optional detection libraries.
-- Updated module version metadata to `1.0.24` / integer `1024` for both NativeAnalytics and the dashboard process module.
-
-## 1.0.25 notes
-
-This release fixes a significant bot-detection bug, adds a behavioral bot filter, and hides the page-edit analytics widget on non-viewable pages.
-
-- **Fixed a broken bot user-agent regex.** Three version patterns (`python/`, `got/`, `java/`) contained unescaped `/` characters that matched the regex delimiter, causing `preg_match()` to fail to compile and return `false` on every call. The entire fallback section after that point — AI scrapers, SEO crawlers, search-engine bots, uptime monitors, security scanners and headless-browser signatures — was effectively unreachable. The slashes are now escaped and the full pattern compiles and matches as intended. (Fixes the `preg_match(): Unknown modifier '['` report; thanks to adrianbj for diagnosing and the patch.)
-- **Added a behavioral bot filter.** UA-based detection cannot catch headless-browser scrapers and rotating-residential-proxy fleets that present real-looking user agents. A new post-hoc classifier runs hourly via LazyCron and marks matching sessions as bots based on behavior rather than UA string:
-  - **UA fleet** — many single-hit, no-referrer sessions sharing one user agent across many distinct IPs within a short window (catches rotating-proxy scrapers).
-  - **Single IP** — excessive single-hit, no-referrer sessions from one IP within one hour (catches naive single-IP scrapers).
-  Flagged rows stay in the database for review but are excluded from all dashboard reporting and daily rollups. Per-session safety: only sessions that themselves match the pattern are flagged, so a legitimate visitor on a stale browser version sharing a user agent is never collateral damage. Original approach contributed by adrianbj (PR #4).
-- **Bot-filter thresholds are configurable.** The four thresholds (UA-fleet minimum sessions, minimum distinct IPs, time window, and single-IP sessions-per-hour) are exposed as module settings, with the conservative defaults of 20 / 5 / 240 min / 30. The whole filter can be toggled off.
-- **Schema:** adds `bot_reason` to `pwna_hits`, plus `is_bot` and `bot_reason` to `pwna_events`, with `is_bot` indexes on both tables. Migration is automatic and non-destructive — existing rows get default values (`is_bot=0`, `bot_reason=''`).
-- **Note for existing installs:** after upgrading, the hourly cron will begin flagging matching historical traffic, so dashboard totals (especially single-page rate) may shift to reflect the post-filter view. This is expected.
-- Updated module version metadata to `1.0.25` / integer `1025` for both NativeAnalytics and the dashboard process module.
-- **Page-edit analytics widget now only shows on viewable pages.** The compact analytics box in the page editor is hidden for pages that cannot accumulate front-end stats — pages with no template file, non-viewable/unpublished pages, and pages that merely back a Page Reference field. It still appears on normal viewable pages as before.
-- **Fixed tab not updating the `?tab=` querystring (issue #3).** The dashboard tab tracking matched WireTabs anchors by exact visible label text. When an anchor contained an icon glyph, badge, or extra whitespace, the match failed, no click handler bound, and the URL stayed stuck at `?tab=overview`. Label matching is now whitespace- and case-tolerant with a substring fallback, so each tab updates the querystring correctly.
-
-## 1.0.26 notes
-
-Thanks to **[adrianbj](https://github.com/adrianbj)** for all five improvements in this release — each was reported, diagnosed, and patched from real-world production use.
-
-- **Fixed date labels showing `00:00:00` on charts (PR #9).** `getDateDisplayFormat()` fell back to ProcessWire's `$config->dateFormat` for the "Site default" option, but that is a *datetime* format (core default `Y-m-d H:i:s`). Chart labels and tooltips therefore rendered dates with a trailing `00:00:00` time component. A new `stripTimeFromDateFormat()` helper strips time/timezone tokens from the site format so the date-only formatter stays date-only. `formatDisplayDateTime()` is unaffected and still renders the full timestamp. (adrianbj, PR #9)
-- **Removed redundant native browser tooltips from charts (PR #8).** Each SVG chart point carried a `<title>` element, which browsers render as a grey native tooltip on hover. It overlapped the custom styled tooltip that already shows the same information. The `<title>` element (and its now-unused `$title` build) has been removed from both the line chart and compare chart renderers. (adrianbj, PR #8)
-- **Current visitors panel now shows one row per person, not per session (PR #7).** Mobile browsers aggressively discard and restore background tabs, wiping `sessionStorage` and minting a fresh session ID on the next pageview — even though `localStorage` (and therefore `visitor_hash`) is unchanged. The panel was listing one row per session, so a single mobile visitor could appear as two or three rows while the summary card above correctly counted them as one unique. `getCurrentVisitors()` now collapses rows by `visitor_hash`, keeping the most-recent session and summing `hit_count` across all sessions in the realtime window. Matches the behaviour of Plausible, Fathom, and GA Realtime. (adrianbj, PR #7)
-- **Fixed `?tab=` URL parameter not updating when switching tabs (PR #6).** The original click handler polled the DOM for the active tab inside a `setTimeout(0)`, but jQuery UI may not have swapped the `.ui-tabs-active` class yet at that point, so `getActiveSlug()` returned the *previous* tab. Four compounding causes were fixed across four commits: (1) switched primary URL-sync to jQuery UI's `tabsactivate` event, which fires after activation and exposes `ui.newTab` directly; (2) gated `tabsactivate` with an `initialTabActivated` flag to suppress URL writes during widget creation; (3) filtered the click handler to real DOM events using `event.originalEvent` to ignore programmatic `.trigger()` calls from WireTabs init; (4) removed the `pagehide`/`beforeunload` listener that was calling `syncMainTabState()` during page teardown — jQuery UI strips `.ui-tabs-active` during widget destruction, causing the URL to briefly flash to `?tab=overview` on every reload. Reload and share URL now work correctly for all tabs. (adrianbj, PR #6)
-- **Added `scanner_404` bot rule and `bot404ShowBots` setting (PR #5).** The existing `ua_fleet` and `ip_excessive` rules miss a common attack pattern: recon scanners that probe one missing path per IP in a short burst — well below both thresholds. A new Rule 3 (`scanner_404`) flags any session whose *only* hit is a 404. Real users almost always take a second action after a 404 (back button, retry, follow a suggestion link), producing a multi-hit session; a session with exactly one 404 hit is an overwhelmingly reliable scanner signal. A new `bot404ShowBots` module setting (default **off**) controls whether the 404 panel includes bot-flagged sessions. Off by default for consistency with all other panels; admins who want scanner-probe visibility for attack-path analysis can opt in. (adrianbj, PR #5)
-
-## 1.0.27 notes
-
-- **Fixed the tracking endpoint being recorded as a pageview.** On some setups (ProcessWire installed in a subdirectory, behind a reverse proxy, or where the `/pwna-track/` request was not recognised as the analytics endpoint) the endpoint's own path could leak into stored hits. The result was that **Top pages**, **Top landing pages** and **Top exit pages** all showed only `/pwna-track/`, with sessions started equal to sessions ended. A new `isEndpointPath()` guard now hard-excludes `/pwna-track/` and `/pwna-realtime/` from being stored as a pageview or event, and the `getRequestPathForStorage()` fallback can no longer return an endpoint path. Existing `/pwna-track/` rows can be cleaned up via the suspicious-path removal tool.
-- Updated module version metadata to `1.0.27` / integer `1027`.
-
-## 1.0.38 notes
-
-### Security — tracking endpoint size limits and rate limit
-- The public tracking endpoint now refuses request bodies (and query strings) larger than 8 KB with HTTP 413, before anything is decoded. Real tracker payloads are well under 2 KB.
-- Event `extra` data is no longer stored as-is: only flat scalar values are kept (max 20 keys, keys up to 64 chars, string values up to 255 chars) and the encoded `extra_json` is capped at 2 KB.
-- New setting **Filters & exclusions → Tracking endpoint: max requests per IP per minute** (default `240`, `0` disables). Requests above the limit get HTTP 429 and are not stored. The limiter is file-based (`site/assets/cache/NativeAnalytics/ratelimit/`), adds no database writes and fails open on filesystem errors.
-
-### Security — CSV injection in exports
-- Pages, Referrers, 404 and Events CSV exports now prefix text cells that start with `=`, `+`, `-`, `@`, tab or CR with an apostrophe, so visitor-supplied paths, referrers and event names/labels can no longer open as live formulas in Excel or Google Sheets. Numeric values are unchanged.
-
-Thanks to Adrian (adrianbj) for the private report.
-
-- Updated module version metadata to `1.0.38` / integer `1038`.
-
-## 1.0.37 notes
-
-### Security — visitor IP can no longer be spoofed
-- Previously the visitor IP was taken from `CF-Connecting-IP` / `X-Forwarded-For` whenever present. Any client could send these headers to bypass the IP blocklist, evade the "single IP" bot rule and pollute cookie-less visitor counts.
-- New setting **Filters & exclusions → Visitor IP source**:
-  - **Automatic** (default): `CF-Connecting-IP` is trusted only from Cloudflare's published edge ranges; `X-Forwarded-For` only from private/loopback peers (local reverse proxy, Docker) or addresses listed in **Trusted proxies** (IPs or CIDR, IPv4/IPv6). The forwarding chain is read from the right, so a forged left-most value is ignored.
-  - **Direct connection only**: never trust forwarding headers.
-  - **Legacy**: previous behaviour, for hosts whose proxy IPs cannot be listed (not recommended).
-- The settings page shows the IP detected for your own request and warns when forwarding headers arrive from an untrusted peer (typically an unlisted hosting load balancer — add it to Trusted proxies).
-
-### Tracking integrity — verified beacon path and title (PR #24 by adrianbj)
-- A forged tracking beacon can no longer pin a made-up path or title on a real page. The path must be the page's own path (in any language); extra URL segments or a page number are accepted only when the page's template enables URL segments or pagination. The title must be one of the page's own titles (in any language), otherwise the current title is used.
-- Unpublished pages and pages under the admin tree (users, roles, permissions, repeater items) are dropped like admin pages already were.
-- A path that does not belong to the page drops the page attribution rather than the whole beacon, so pages served at other URLs (URL hooks) are still counted. The 404 page is exempt from the path check, but a beacon claiming it with a non-404 status is ignored.
-
-### Form spam honeypot
-- New **Form spam protection** settings group. When enabled, an invisible field is added to every front-end POST form (FormBuilder, LoginRegister, custom forms). A filled honeypot flags the visitor's analytics session as a bot (reason `honeypot`) via `markSessionHashAsBot()`, catching multi-page form spam that behavioural rules cannot.
-- Actions: **flag only** (default; the form still processes) or **flag and stop the submission** (HTTP 403 before any form processing).
-- Per-site automatic field name (configurable), opt-out per form with `data-pwna-no-honeypot` or by form id, never applied to superusers, never touches non-HTML responses. Works in every tracking mode; the JS tracker passes its session id so the right session is flagged.
-
-### Developer hooks
-- `NativeAnalytics::shouldTrack(Page $page, $context)` — return false to skip tracking a page (`server` or `tracker` context).
-- `NativeAnalytics::beforeSaveHit(array $row, $context)` — modify a pageview row or return false to discard it.
-- `NativeAnalytics::beforeSaveEvent(array $row)` — same for events.
-- `NativeAnalytics::honeypotTriggered(array $sessionHashes, $action)` — react to caught spam; return `block` or `allow` to override the configured action.
-- Hook failures are logged and never break tracking; hooks cannot add unknown columns.
-- Attach hooks in `site/init.php` (or an autoload module's `init()`) to cover everything. Tracking beacons (`beforeSaveHit` with context `tracker`, `beforeSaveEvent`) are answered before `site/ready.php` runs, so hooks added there only apply to server-side tracking, tracker injection and the honeypot.
-- Request handling now runs at later boot points (beacons before `ProcessPageView::execute`, page requests after `ProcessPageView::ready`) instead of in the module's `init()`/`ready()`, so these hooks are in place when needed. Beacons still skip other modules' `ready()` and stay lightweight.
-
-### Dashboard
-- New **Content** tab: **Declining pages** and **Growing pages** (selected period vs. the previous period of equal length, min. 10 views) and **Pages without visits** (published, viewable pages created before the period that got no visits, with edit links). Based on daily aggregates, so it also works beyond raw-hit retention; respects the template filter and excluded paths.
-- New **Bot traffic** panel on the System tab: flagged pageviews, sessions and events by detection reason, with the bot share of recorded traffic.
-
-### Admin UI
-- Restyled the **Bot detection** status notice in module settings to match the admin theme. It now inherits the theme's text colour with neutral translucent tints, so it fits AdminThemeUikit, Konkat and dark themes alike. Only the left accent bar and status icon are coloured (theme main colour for OK states, amber for warnings), so it stays visible without looking out of place.
-
-- Updated NativeAnalytics and dashboard version metadata consistently to `1.0.37` / integer `1037`.
-
-## 1.0.36 notes
-
-- **Global Privacy Control.** "Respect Do Not Track" now also honours GPC (`Sec-GPC: 1` header on the server, `navigator.globalPrivacyControl` in the tracker). GPC is the signal current browsers and privacy extensions send; Firefox has removed Do Not Track. Existing installs with the option on start respecting GPC automatically.
-- **Verified page data on tracking beacons.** For beacons sent to `/pwna-track/`, the page ID and template sent by the browser are checked against the real page: unknown IDs, trashed pages and admin pages are dropped, and the template always comes from ProcessWire. Forged beacons can no longer attribute hits to invented templates or admin pages.
-- Updated the bundled **matomo/device-detector 6.5.1 → 6.5.2** (new devices, browsers, bots, Android 16/17 client hints). The device-detector cache is versioned and cleared on upgrade.
-- The brand header button now links to **GitHub Sponsors** ("Sponsor") instead of PayPal.
-
-## 1.0.35 notes
-
-### Bot filtering — skip automated beacons in the browser (PR #23)
-- `tracker.js` no longer sends any beacon (pageview, time on page, events) when `navigator.webdriver` is true (Selenium, Playwright, Puppeteer) or the user agent carries an explicit automation marker (HeadlessChrome, Googlebot, HubSpot Crawler, Baiduspider-render, GPTBot, ClaudeBot, Lighthouse …). Each skipped beacon saves a full ProcessWire boot; on a measured install this was ~33 % of all `/pwna-track/` requests.
-- The client pattern is deliberately narrow so real browsers are never skipped (CUBOT phones, Facebook/Pinterest/Instagram in-app browsers, legacy `compatible; MSIE` UAs). The server keeps its full check for everything else.
-
-### Fixed real visitors being rejected as bots on the server
-- `isBotUserAgent()` ran the broad regex fallback even when device-detector had positively identified a real browser. Visitors on CUBOT phones (matched `bot\b`) and in Pinterest/Tumblr in-app browsers were silently discarded. When device-detector recognises a browser or in-app browser on a known OS, only the narrow automation pattern (`AUTOMATED_UA_PATTERN`, shared with `tracker.js`) is now applied. Without device-detector, behaviour is unchanged.
-- The Chrome Privacy Preserving Prefetch Proxy pattern now matches its real user agent (with spaces).
-
-- Updated NativeAnalytics and dashboard version metadata consistently to `1.0.35` / integer `1035`.
-
-## 1.0.34 notes
-
-Integrates three pull requests from adrianbj (#20, #21, #22), with additional hardening.
-
-### Performance — persistent device-detector cache (PR #22)
-- matomo/device-detector's parsed regex lists are now cached as PHP files under `site/assets/cache/NativeAnalytics/device-detector/`, so OPcache keeps them in shared memory. This removes a ~370 ms YAML parse from every tracking beacon.
-- Writes are atomic (temp file + rename); corrupt entries are discarded and regenerated; an unwritable or full disk degrades silently to the previous per-request cache instead of logging warnings on every hit.
-- The cache is only enabled when the loaded device-detector exposes the typed 5.0+ `CacheInterface`, so sites supplying an older library via Composer cannot hit a fatal class-declaration error.
-- Stale cache files are removed on module upgrade and uninstall (cache only — analytics data is untouched).
-
-### API — explicit bot flagging (PR #20)
-- New `$modules->get('NativeAnalytics')->markSessionAsBot($rawSessionId, $reason = 'honeypot')` lets a caller holding a zero-false-positive signal (filled honeypot, failed challenge) flag a session that behavioural rules can never reach (multi-hit form spam).
-- New `markSessionHashAsBot($sessionHash, $reason)` for callers that only have the stored hash (backfills, drill-downs).
-- Flags hits, events and attribution; idempotent; nothing is deleted. `$reason` must be a short `[a-z0-9_]` tag, otherwise `honeypot` is used. Returns the number of rows actually flagged, including on partial failure.
-- Daily, event and goal aggregates for affected days older than yesterday are rebuilt immediately, so retroactive flagging is reflected in reports (recent days stay with the hourly cron, avoiding rebuild amplification from repeat submissions).
-
-### PHP 8.4/8.5 compatibility (PR #21)
-- `getCanonicalPagePath(?Page $page = null)` declares its nullable parameter explicitly, removing the implicit-nullable deprecation notice.
-
-- Updated NativeAnalytics and dashboard version metadata consistently to `1.0.34` / integer `1034`.
-
-## 1.0.33 notes
-
-### Tracking reliability & configuration persistence
-- Fixed a critical configuration persistence bug in internal maintenance/schema markers. Runtime updates now merge into the complete persisted module configuration instead of saving a one-key config array. This prevents user choices such as **Server-side only**, **Cookie-less**, consent, exclusions and other settings from apparently resetting after schema checks, hourly/daily maintenance, funnel saves or manual maintenance.
-- This also prevents installations from unexpectedly falling back from **Server-side only** to the default **JavaScript first** mode after an internal config write.
-- Added a reliable fallback for pages that use an HTML `<meta http-equiv="refresh">` redirect. In JS-first mode, rendered meta-refresh pages are recorded server-side before navigation and the client auto-pageview is suppressed to avoid duplicates. Server-only and Both modes keep their existing behavior.
-- Added protection against duplicate server-side pageview recording during repeated render hooks.
-- Tracking/database failures are logged to the dedicated NativeAnalytics log for easier troubleshooting.
-
-### Tracking health & diagnostics
-- Added a native **Tracking health & diagnostics** panel showing tracking state, mode, storage mode, tracker availability, raw-hit count and last recorded hit.
-- Added a CSRF-protected **Run tracking test** action that verifies internal endpoint routing, public endpoint reachability and a real raw-table database write.
-- The database test runs inside a transaction and is rolled back, so diagnostic rows never enter analytics reports.
-- Public server-to-self/loopback reachability is advisory: an HTTP 0 response no longer marks tracking as failed when internal routing and database writes pass.
-- Public endpoint checks use an absolute HTTP(S) URL with `WireHttp`, while browser tracking continues to use the normal site-relative endpoint.
-- Endpoint recognition is normalised for ProcessWire installations in a subdirectory and shared by live endpoint handling and diagnostics.
-- Diagnostic results are shown in an accessible native HTML `<dialog>` modal that does not depend on AdminThemeUikit or jQuery UI. An inline fallback keeps the result visible if the browser/admin theme cannot open the dialog.
-- The result modal supports Close, Escape and backdrop click and is responsive across ProcessWire admin themes.
-
-### Data safety
-- Analytics tables are preserved on uninstall by default. Deleting collected analytics data is now an explicit opt-in setting instead of a silent destructive action.
-- Added configuration-integrity checks and clearer diagnostics for common zero-data situations such as disabled tracking, consent/DNT restrictions and excluded roles.
-
-- Updated NativeAnalytics and dashboard version metadata consistently to `1.0.33` / integer `1033`.
-
-## 1.0.32 notes
-
-### Performance / schema maintenance
-- Fixed an autoload performance issue where the full schema sweep (`SHOW COLUMNS`, `SHOW INDEX` and related checks) could run on every request. The completed schema-check version is now persisted and the sweep only runs again when the module version changes, while install/upgrade still force a full check.
-- Legacy schema backfill UPDATEs now run only when a missing legacy column was actually added instead of on every request.
-- Corrected the legacy `created_hour` / `created_date` backfill predicates so legitimate midnight (`0`) and `1970-01-01` values do not keep matching forever.
-- The internal schema-check marker is preserved when normal module settings are saved.
-- Updated all NativeAnalytics and dashboard module version metadata to `1.0.32` / integer `1032`.
-
-Thanks to **[adrianbj](https://github.com/adrianbj)** for identifying and profiling the issue in PR #19.
-
-## 1.0.31 notes
-
-### Data retention & disk space
-- Added a **"Reclaim disk space after cleanup"** option (on by default). After the daily retention purge, the analytics tables are rebuilt (`OPTIMIZE TABLE`, at most weekly) so freed space is actually returned to the filesystem — InnoDB does not shrink the database file on `DELETE` alone.
-- Added a **storage status panel** to the module settings: per-table row counts and on-disk size for all `pwna_*` tables, plus last-cleanup and last-reclaim timestamps.
-- Added manual **"Purge old data now"** and **"Reclaim disk space now"** buttons (CSRF-protected, superuser / `nativeanalytics-manage` only).
-- Clarified the retention setting descriptions (what is deleted, what is kept, when).
-
-### Acquisition & campaigns
-- Added **first-touch session attribution** (new `pwna_attribution` table). Each session is attributed once, on its first hit, to the channel/campaign that originally brought the visitor — so later pageviews and conversions in the session no longer lose their source.
-- Added a **channel classifier**: Direct / Organic Search / Social / Referral / Paid / Email / Affiliate / Campaign (UTM medium/source first, then referrer host, no external dependencies).
-- Sources tab: new **"Channels (first-touch sessions)"** and **"Campaigns (first-touch sessions)"** tables alongside the existing per-hit campaign table.
-- Added **`utm_term` and `utm_content`** capture on both tracking paths (server-side and JS); `utm_content` is now part of the campaign breakdown.
-- Monthly email report: optional **"Channels (first-touch sessions)"** section in the HTML, plain-text and PDF formats (new toggle, on by default).
-
-### Conversion funnel (new dashboard tab)
-- New **Funnel** tab: define an ordered funnel (up to 8 steps, one per line) and see how many sessions progress from step to step within the selected date range.
-- **Page steps** (`/exact/path/` or `/section/*` prefix) and **event steps** (`event:group`, `event:group/name`, `event:group/name/label`) can be mixed freely; `Label = <spec>` sets a custom label.
-- Sequential semantics: a session counts for a step only if it reached it after the previous step (first-occurrence times, merged across hits and events per session).
-- Bar chart with per-step drop-off, "% continued from previous", a summary table and the overall completion rate. The definition is saved and survives reloads and module-settings saves.
-
-### Dashboard
-- Auto-refresh is now **configurable** ("Dashboard auto-refresh (seconds)", `0` disables, 5–300 s range) and **pauses while the browser tab is hidden**, resuming with an immediate refresh on return — significantly less server load from background tabs.
-- Added a **live-status indicator** next to "Current visitors" (Live / Paused (tab hidden) / Update failed).
-
-### Performance
-- Added composite index `pwna_hits (is_bot, created_at)` — serves virtually every dashboard report and daily-aggregate rebuild (equality column first, range second).
-- Added composite index `pwna_hits (ip_hash, created_date, created_hour)` — serves the behavioral bot detector and IP-based cleanup deletes; the hits table previously had **no** `ip_hash` index at all.
-- Added composite index `pwna_events (is_bot, created_at)` for event reports.
-- Indexes are added automatically on first load after the update (online DDL; the one-time build may take a moment on very large tables).
-
-### Library
-- Updated the bundled **matomo/device-detector 6.4.2 → 6.5.1** (newest device, browser and bot definitions). A site-wide Composer install still takes precedence, and manually replacing `lib/matomo-device-detector/` remains supported, as before.
-
-### Fixes
-- Fixed **SQLSTATE HY000 2014 "Cannot execute queries while other unbuffered queries are active"** when running the disk-reclaim maintenance action (`OPTIMIZE TABLE` returns a result set that must be consumed and closed).
-- Fixed the dashboard funnel definition (and other runtime-saved values) being **wiped when saving module settings** — all runtime-persisted config keys now have matching hidden fields in the config form.
-- New funnel, live-status and badge styles now use the module's theme variables (`--pwna-*` / `light-dark()`), fixing unreadable text in **Konkat** and other dark admin themes.
-
-### Upgrade notes
-- All schema changes (new columns, the new attribution table, new indexes) are applied automatically on the first load after the update.
-- Attribution data is collected from the moment of the update onward; earlier sessions are not retroactively attributed.
-- Updated module version metadata to `1.0.31` / integer `1031` for both NativeAnalytics and the dashboard process module.
-
-## 1.0.30 notes
-
-- Fixed the page edit analytics widget so it no longer appears in field/file/image limited edit dialogs such as image edit modals.
-- Hardened PrivacyWire auto-consent sync for same-tab banner changes and stale consent versions.
-- Prevented dashboard tab flash when opening or restoring a non-overview tab.
-- Updated module version metadata to `1.0.30` / integer `1030` for both NativeAnalytics and the dashboard process module.
-
-## 1.0.29 notes
-
-Thanks again to **[adrianbj](https://github.com/adrianbj)** for all six improvements in this release.
-
-- **Made the dashboard tab assembly hookable (PR #15).** Added hookable `___getTabLabels()` (a single slug => label registry in display order) and `___getTabs(array $tabs)` (receives the slug-keyed panel content). `getActiveTab()`, `renderTabNav()` and `renderWireTabsScript()` now read from `getTabLabels()` instead of each carrying a hardcoded copy, and `___execute()` builds panels keyed by slug before passing them through `getTabs()`. Companion modules can now register their own tabs (label plus content) without patching `ProcessNativeAnalytics`. Behaviour is unchanged for the built-in tabs. (adrianbj, PR #15)
-- **Hourly cron now rebuilds yesterday's aggregates too (PR #14).** `markBehavioralBots()` runs hourly with a 24h lookback, so it can flag rows dated yesterday (e.g. a rotating-proxy fleet or scanner run that only becomes statistically detectable after midnight). Those late flags were not reflected in yesterday's already-built daily aggregate. `handleHourlyCron()` now rebuilds the daily/event/goal aggregates for both yesterday and today, so late-flagged bots are dropped from historical totals. (adrianbj, PR #14)
-- **Dashboard trend charts now live-update on the realtime poll (PR #13).** The four trend charts (traffic, hourly, engagement, goals) now refresh on the existing 10-second realtime poll — the same poll that already updates the summary cards — without a full page reload, via a new `liveCharts` flag and `updateCharts()` handler. This build also fixes the latest-slot payload so the hourly chart updates the selected/current hour instead of the final `23:00` slot. (adrianbj, PR #13)
-- **Classifier-flagged bot sessions are now hidden from the Current visitors panel (PR #12).** Aggregate queries already excluded `is_bot = 1` rows via `buildWhere()`, but the live Current visitors panel did not. `getCurrentVisitors()` now also excludes visitor hashes flagged as bots within the last day, so the live panel matches the rest of the dashboard. (adrianbj, PR #12)
-- **Added a "Find page" autocomplete to the dashboard toolbars (PR #11).** A search-as-you-type control sits beside the existing numeric Page ID filter in both toolbars and suggests only real ProcessWire pages that have recorded non-bot, non-404 analytics data, via a new `___executePageSearch()` endpoint. (adrianbj, PR #11)
-- **Fixed the current-visitors count/list mismatch (PR #10).** The "Current visitors" card count and the list below it could disagree (card shows N, list shows fewer or "no active visitors"). Both the summary and the list now draw from the same fixed fetch pool (`CURRENT_VISITORS_FETCH_LIMIT`) and apply the same bot/probe filtering before deduplicating by visitor, so the number and the rows always agree. (adrianbj, PR #10)
-- **Made direct dashboard uninstall non-destructive.** Uninstalling `ProcessNativeAnalytics` directly now removes only the dashboard admin page/registry entry and no longer cascades into uninstalling the main `NativeAnalytics` module. Full data removal remains tied to uninstalling the main module itself.
-- Updated module version metadata to `1.0.29` / integer `1029` for both NativeAnalytics and the dashboard process module.
+Made by [Pyxios](https://www.pyxios.com)

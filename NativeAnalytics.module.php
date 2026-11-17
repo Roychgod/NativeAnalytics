@@ -4,7 +4,7 @@ require_once __DIR__ . '/lib/like-escape.php';
 
 class NativeAnalytics extends WireData implements Module, ConfigurableModule {
 
-    const VERSION = '1.0.37';
+    const VERSION = '1.0.38';
 
     /**
      * Markers that no person's browser carries. Used by the client tracker
@@ -14,6 +14,12 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
      * matching bot\b, Pinterest in-app browser matching "pinterest").
      */
     const AUTOMATED_UA_PATTERN = '/bot\\/|bot\\.html|compatible;[^)]*bot|crawl|spider|slurp|headless|phantomjs|selenium|puppeteer|playwright|lighthouse|pagespeed|chrome[\\s-]privacy[\\s-]preserving[\\s-]prefetch|google-|mediapartners|facebookexternalhit|gptbot|claudebot|perplexitybot|bytespider|amazonbot|applebot/i';
+    /** Hard cap for a tracking request body / query string (bytes). Real tracker payloads are well under 2 KB. */
+    const MAX_TRACK_PAYLOAD_BYTES = 8192;
+    /** Hard cap for the encoded extra_json of one event (bytes). */
+    const MAX_EVENT_EXTRA_BYTES = 2048;
+    /** Max number of keys kept from an event's extra data. */
+    const MAX_EVENT_EXTRA_KEYS = 20;
     const HITS_TABLE = 'pwna_hits';
     const DAILY_TABLE = 'pwna_daily';
     const SESSIONS_TABLE = 'pwna_sessions';
@@ -76,6 +82,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         'deleteDataOnUninstall' => 0,
         'clientIpSource' => 'auto',
         'trustedProxies' => '',
+        'trackRateLimitPerMinute' => 240,
         'honeypotEnabled' => 0,
         'honeypotAction' => 'flag',
         'honeypotFieldName' => '',
@@ -86,7 +93,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         return [
             'title' => 'NativeAnalytics',
             'summary' => 'Native first-party analytics dashboard for ProcessWire with traffic, acquisition channels, funnels, compare, exports, event tracking and goals.',
-            'version' => 1037,
+            'version' => 1038,
             'author' => 'Pyxios - Roych (www.pyxios.com)',
             'href' => 'https://processwire.com/talk/topic/31808-native-analytics-%E2%80%94-a-native-analytics-module-for-processwire/',
             'repo' => 'https://github.com/Roychgod/NativeAnalytics',
@@ -1042,6 +1049,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
             'trackingMode' => 'js_first',
             'clientIpSource' => 'auto',
             'trustedProxies' => '',
+            'trackRateLimitPerMinute' => 240,
             'honeypotEnabled' => 0,
             'honeypotAction' => 'flag',
             'honeypotFieldName' => '',
@@ -1533,6 +1541,16 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         }
         $wrapper->add($f);
 
+        $f = $wire->modules->get('InputfieldInteger');
+        $f->name = 'trackRateLimitPerMinute';
+        $f->showIf = 'trackingEnabled=1';
+        $f->label = 'Tracking endpoint: max requests per IP per minute';
+        $f->min = 0;
+        $f->value = isset($data['trackRateLimitPerMinute']) ? (int) $data['trackRateLimitPerMinute'] : 240;
+        $f->description = 'Requests to the tracking endpoint (page views, events, time on page) above this number from one IP within a minute are refused with HTTP 429 and not stored. Protects the database from scripted floods. 0 disables the limit.';
+        $f->notes = 'A normal visitor sends only a few requests per page. Raise it if many visitors share one IP (schools, offices behind NAT).';
+        $wrapper->add($f);
+
         $f = $wire->modules->get('InputfieldText');
         $f->name = 'searchQueryVars';
         $f->showIf = 'trackingEnabled=1';
@@ -1903,6 +1921,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
                     ['searchQueryVars', 50],
                     ['clientIpSource', 50],
                     ['trustedProxies', 50],
+                    ['trackRateLimitPerMinute', 50],
                 ],
             ],
             [
@@ -2899,6 +2918,7 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
         if($requestMethod !== 'POST' && $requestMethod !== 'GET') {
             $this->sendTrackingResponse(405, ['ok' => false, 'message' => 'Method not allowed']);
         }
+        if($this->isTrackRateLimited()) $this->sendTrackingResponse(429);
 
         $payload = $this->getIncomingPayload();
         if(($payload['type'] ?? '') === 'event') {
@@ -3294,15 +3314,84 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
     }
 
     protected function getIncomingPayload() {
-        $raw = file_get_contents('php://input');
-        $json = json_decode($raw, true);
-        if(is_array($json)) return $json;
-        $payload = [];
-        parse_str($raw, $payload);
-        if(is_array($payload) && $payload) return $payload;
+        $max = self::MAX_TRACK_PAYLOAD_BYTES;
+        $tooLarge = ['ok' => false, 'message' => 'Payload too large'];
+
+        // Refuse oversized requests before reading or decoding anything.
+        $declared = isset($_SERVER['CONTENT_LENGTH']) ? (int) $_SERVER['CONTENT_LENGTH'] : 0;
+        if($declared > $max) $this->sendTrackingResponse(413, $tooLarge);
+        if(strlen((string) ($_SERVER['QUERY_STRING'] ?? '')) > $max) $this->sendTrackingResponse(413, $tooLarge);
+
+        // Bounded read also covers chunked bodies that carry no Content-Length.
+        $raw = '';
+        $in = fopen('php://input', 'rb');
+        if($in) {
+            $read = stream_get_contents($in, $max + 1);
+            fclose($in);
+            if(is_string($read)) $raw = $read;
+        }
+        if(strlen($raw) > $max) $this->sendTrackingResponse(413, $tooLarge);
+
+        if($raw !== '') {
+            $json = json_decode($raw, true, 8);
+            if(is_array($json)) return $json;
+            $payload = [];
+            parse_str($raw, $payload);
+            if(is_array($payload) && $payload) return $payload;
+        }
         $payload = $this->wire('input')->post->getArray();
-        if(is_array($payload) && $payload) return $payload;
+        if(is_array($payload) && $payload) {
+            if(strlen(http_build_query($payload)) > $max) $this->sendTrackingResponse(413, $tooLarge);
+            return $payload;
+        }
         return $this->wire('input')->get->getArray();
+    }
+
+    /**
+     * Fixed-window per-IP limiter for the public tracking endpoint.
+     * File based (one small counter file per IP hash) so it adds no DB writes
+     * and works without APCu/Redis. Fails open on any filesystem error.
+     */
+    protected function isTrackRateLimited() {
+        $limit = (int) $this->trackRateLimitPerMinute;
+        if($limit < 1) return false;
+        $ip = (string) $this->getClientIp();
+        if($ip === '') return false;
+
+        $dir = $this->wire('config')->paths->cache . 'NativeAnalytics/ratelimit/';
+        if(!is_dir($dir) && !wireMkdir($dir, true)) return false;
+        if(!is_writable($dir)) return false;
+
+        $window = (int) floor(time() / 60);
+        $file = $dir . substr($this->hashValue($ip), 0, 40) . '.cnt';
+        if(is_file($file) && !is_writable($file)) return false;
+        $fp = fopen($file, 'c+');
+        if(!$fp) return false;
+        $count = 0;
+        try {
+            if(!flock($fp, LOCK_EX)) return false;
+            $data = (string) stream_get_contents($fp);
+            $parts = explode(':', trim($data), 2);
+            $count = (count($parts) === 2 && (int) $parts[0] === $window) ? (int) $parts[1] : 0;
+            $count++;
+            rewind($fp);
+            ftruncate($fp, 0);
+            fwrite($fp, $window . ':' . $count);
+            fflush($fp);
+            flock($fp, LOCK_UN);
+        } finally {
+            fclose($fp);
+        }
+
+        // Occasional cleanup of counters from past windows.
+        if(mt_rand(1, 500) === 1) {
+            $old = glob($dir . '*.cnt');
+            foreach(is_array($old) ? $old : [] as $oldFile) {
+                if(is_file($oldFile) && filemtime($oldFile) < time() - 600) unlink($oldFile);
+            }
+        }
+
+        return $count > $limit;
     }
 
     protected function sendTrackingResponse($status = 200, array $payload = []) {
@@ -5105,8 +5194,28 @@ class NativeAnalytics extends WireData implements Module, ConfigurableModule {
 
     protected function encodeEventExtra(array $extra) {
         if(!$extra) return null;
-        $json = json_encode($extra, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-        return $json === false ? null : $json;
+        // Keep a bounded number of flat scalar values; nested arrays/objects are dropped.
+        $clean = [];
+        foreach($extra as $key => $value) {
+            if(count($clean) >= self::MAX_EVENT_EXTRA_KEYS) break;
+            $key = $this->trimValue(preg_replace('/[^A-Za-z0-9_.:-]/', '', (string) $key), 64);
+            if($key === '' || array_key_exists($key, $clean)) continue;
+            if(is_string($value)) {
+                $clean[$key] = $this->trimValue($value, 255);
+            } elseif(is_int($value) || is_bool($value) || $value === null) {
+                $clean[$key] = $value;
+            } elseif(is_float($value) && is_finite($value)) {
+                $clean[$key] = $value;
+            }
+        }
+        $flags = JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE;
+        while($clean) {
+            $json = json_encode($clean, $flags);
+            if($json === false) return null;
+            if(strlen($json) <= self::MAX_EVENT_EXTRA_BYTES) return $json;
+            array_pop($clean);
+        }
+        return null;
     }
 
     protected function insert($table, array $row) {

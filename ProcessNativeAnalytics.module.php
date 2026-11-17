@@ -6,7 +6,7 @@ class ProcessNativeAnalytics extends Process {
         return [
             'title' => 'NativeAnalytics Dashboard',
             'summary' => 'Dashboard for the NativeAnalytics module.',
-            'version' => 1037,
+            'version' => 1038,
             'author' => 'Pyxios - Roych (www.pyxios.com)',
             'permission' => 'nativeanalytics-view',
             'icon' => 'area-chart',
@@ -387,25 +387,25 @@ public function ___execute() {
         if($template !== '') $filters['template'] = $template;
 
         $fp = fopen('php://temp', 'r+');
-        fputcsv($fp, ['range', $rangeMeta['label']], ',', '"', '\\');
+        $this->writeCsvRow($fp, ['range', $rangeMeta['label']]);
 
         if($exportType === 'referrers') {
             $rows = $analytics->getTopReferrers($rangeMeta['rangeSpec'], 500, $filters);
-            fputcsv($fp, ['referrer', 'views'], ',', '"', '\\');
-            foreach($rows as $row) fputcsv($fp, [$row['referrer_host'], $row['views']], ',', '"', '\\');
+            $this->writeCsvRow($fp, ['referrer', 'views']);
+            foreach($rows as $row) $this->writeCsvRow($fp, [$row['referrer_host'], $row['views']]);
         } elseif($exportType === '404s') {
             $rows = $analytics->getTop404Paths($rangeMeta['rangeSpec'], 500);
-            fputcsv($fp, ['path', 'hits', 'unique_visitors'], ',', '"', '\\');
-            foreach($rows as $row) fputcsv($fp, [$row['path'], $row['views'], $row['uniques']], ',', '"', '\\');
+            $this->writeCsvRow($fp, ['path', 'hits', 'unique_visitors']);
+            foreach($rows as $row) $this->writeCsvRow($fp, [$row['path'], $row['views'], $row['uniques']]);
         } elseif($exportType === 'events') {
             $rows = $analytics->getTopEvents($rangeMeta['rangeSpec'], 500, $filters);
-            fputcsv($fp, ['event_name', 'event_group', 'event_label', 'events', 'unique_visitors', 'sessions'], ',', '"', '\\');
-            foreach($rows as $row) fputcsv($fp, [$row['event_name'], $row['event_group'], $row['event_label'], $row['events'], $row['uniques'], $row['sessions']], ',', '"', '\\');
+            $this->writeCsvRow($fp, ['event_name', 'event_group', 'event_label', 'events', 'unique_visitors', 'sessions']);
+            foreach($rows as $row) $this->writeCsvRow($fp, [$row['event_name'], $row['event_group'], $row['event_label'], $row['events'], $row['uniques'], $row['sessions']]);
         } else {
             // Default: pages
             $rows = $analytics->getTopPages($rangeMeta['rangeSpec'], 500, $filters);
-            fputcsv($fp, ['page_id', 'title', 'template', 'path', 'views', 'uniques', 'sessions'], ',', '"', '\\');
-            foreach($rows as $row) fputcsv($fp, [$row['page_id'], $row['page_title'], $row['template'], $row['path'], $row['views'], $row['uniques'], $row['sessions']], ',', '"', '\\');
+            $this->writeCsvRow($fp, ['page_id', 'title', 'template', 'path', 'views', 'uniques', 'sessions']);
+            foreach($rows as $row) $this->writeCsvRow($fp, [$row['page_id'], $row['page_title'], $row['template'], $row['path'], $row['views'], $row['uniques'], $row['sessions']]);
         }
 
         rewind($fp);
@@ -479,6 +479,23 @@ public function ___execute() {
             ];
         }
         $this->sendJsonResponse(['ok' => true, 'results' => $results]);
+    }
+
+    /**
+     * Write one CSV row with formula-injection protection. Paths, referrers and
+     * event names/labels come from visitors' browsers; a cell starting with
+     * = + - @ (or tab/CR) would run as a formula in Excel/Sheets, so such text
+     * cells get a leading apostrophe. Numeric values are left untouched.
+     */
+    protected function writeCsvRow($fp, array $row) {
+        fputcsv($fp, $this->csvSafeCells($row), ',', '"', '\\');
+    }
+
+    protected function csvSafeCells(array $row) {
+        return array_map(function($cell) {
+            if(!is_string($cell) || $cell === '' || is_numeric($cell)) return $cell;
+            return strpbrk($cell[0], "=+-@\t\r") !== false ? "'" . $cell : $cell;
+        }, $row);
     }
 
     protected function sendDownloadResponse($content, $contentType, $filename) {

@@ -1,10 +1,10 @@
-NativeAnalytics 1.0.37
+NativeAnalytics 1.0.38
 
 # NativeAnalytics
 
 Native first-party analytics module for ProcessWire CMS. It tracks traffic and engagement directly inside ProcessWire, without Google Analytics or external APIs.
 
-## Features in v1.0.37
+## Features in v1.0.38
 
 NativeAnalytics is a first-party analytics dashboard for ProcessWire. It keeps the tracking data inside your ProcessWire installation and does not rely on Google Analytics, external tracking scripts or remote analytics APIs.
 
@@ -258,6 +258,20 @@ Thanks to **[adrianbj](https://github.com/adrianbj)** for all five improvements 
 
 - **Fixed the tracking endpoint being recorded as a pageview.** On some setups (ProcessWire installed in a subdirectory, behind a reverse proxy, or where the `/pwna-track/` request was not recognised as the analytics endpoint) the endpoint's own path could leak into stored hits. The result was that **Top pages**, **Top landing pages** and **Top exit pages** all showed only `/pwna-track/`, with sessions started equal to sessions ended. A new `isEndpointPath()` guard now hard-excludes `/pwna-track/` and `/pwna-realtime/` from being stored as a pageview or event, and the `getRequestPathForStorage()` fallback can no longer return an endpoint path. Existing `/pwna-track/` rows can be cleaned up via the suspicious-path removal tool.
 - Updated module version metadata to `1.0.27` / integer `1027`.
+
+## 1.0.38 notes
+
+### Security — tracking endpoint size limits and rate limit
+- The public tracking endpoint now refuses request bodies (and query strings) larger than 8 KB with HTTP 413, before anything is decoded. Real tracker payloads are well under 2 KB.
+- Event `extra` data is no longer stored as-is: only flat scalar values are kept (max 20 keys, keys up to 64 chars, string values up to 255 chars) and the encoded `extra_json` is capped at 2 KB.
+- New setting **Filters & exclusions → Tracking endpoint: max requests per IP per minute** (default `240`, `0` disables). Requests above the limit get HTTP 429 and are not stored. The limiter is file-based (`site/assets/cache/NativeAnalytics/ratelimit/`), adds no database writes and fails open on filesystem errors.
+
+### Security — CSV injection in exports
+- Pages, Referrers, 404 and Events CSV exports now prefix text cells that start with `=`, `+`, `-`, `@`, tab or CR with an apostrophe, so visitor-supplied paths, referrers and event names/labels can no longer open as live formulas in Excel or Google Sheets. Numeric values are unchanged.
+
+Thanks to Adrian (adrianbj) for the private report.
+
+- Updated module version metadata to `1.0.38` / integer `1038`.
 
 ## 1.0.37 notes
 
